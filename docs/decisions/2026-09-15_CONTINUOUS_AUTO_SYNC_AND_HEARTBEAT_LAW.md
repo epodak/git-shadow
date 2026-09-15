@@ -112,14 +112,14 @@
 - **契约行为**：
   1. 命令执行时，前台保持挂起状态并显示动态心跳状态条；
   2. 自动唤起系统默认浏览器弹出 CloudCLI Web 界面；
-  3. 当前本地以轮询 fallback 发现 `.gitshadow` 文件并提交 Shadow CAS 任务；原生事件驱动属于 Roadmap P1；Git 追踪文件仍通过 Git 提交和拉取；
+  3. Linux 当前使用 inotify、其他平台使用轮询 fallback 发现 `.gitshadow` 文件并提交 Shadow CAS 任务；Git 追踪文件仍通过 Git 提交和拉取；
   4. **随行退出**：当用户在终端按下 `Ctrl + C`，本地 watcher 会话终止；远端服务继续按 Lease 规则存活或自毁，不会留下无租约的僵尸进程。
 
 ---
 
 ### 2.4 零开销内核级心跳通道 (`ZeroOverheadHeartbeat`)
 
-- **目标约束**：原生 watcher 方案应采用 OS 内核事件机制，在无文件改动时降低 CPU 唤醒；当前实现使用轮询 fallback，原生 watcher 仍属于 Roadmap P1；
+- **目标约束**：原生 watcher 方案应采用 OS 内核事件机制，在无文件改动时降低 CPU 唤醒；当前已落地 Linux inotify，其他平台仍使用轮询 fallback。
 - **内存红线约束**：服务端不得加载本地项目依赖，常驻执行端的资源占用必须纳入后续真实 VPS smoke test 验收。
 
 ---

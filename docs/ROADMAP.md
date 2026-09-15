@@ -72,7 +72,8 @@
 
 ## 5. P1：本地体验与性能
 
-- [ ] Linux inotify、macOS FSEvents、Windows ReadDirectoryChangesW 监听器
+- [x] Linux inotify 监听器
+- [ ] macOS FSEvents、Windows ReadDirectoryChangesW 监听器
 - [ ] 轮询作为兼容 fallback
 - [ ] watcher 防抖、合并提交和失败退避
 - [ ] 安静模式与可读进度模式

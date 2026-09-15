@@ -71,7 +71,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 - CloudCLI 会话必须由同一个远端 Job 明确创建，收到 `session.ready` 后才打开 `/session/<id>`；禁止直接扫描 SQLite 选择“最新会话”。
 - CloudCLI provider 必须在 Session 创建前确定；命令行使用 `--provider`，交互模式使用本地菜单。当前数据库 provider 非空，不创建 provider-neutral 临时 Session。
 - 短任务完成即退出；长期服务继续遵循 600 秒 Lease 心跳和超时自毁契约。
-- `service-agent` 是 VPS 任务承载端，不是本地工作区 watcher；双向 Shadow 自动同步必须由本地 `--watch` 发现变化，再通过服务执行 CAS。
+- `service-agent` 是 VPS 任务承载端，不是本地工作区 watcher；双向 Shadow 自动同步必须由本地 `--watch` 发现变化，再通过服务执行 CAS。Linux 本地使用 inotify，其他平台回退轮询。
 
 ### 3. `.gitshadow` 显式白名单契约 (No Blackbox)
 - 严禁在底层 Python 代码中硬编码排除黑名单（如私自排除 `_dev_log/`）；

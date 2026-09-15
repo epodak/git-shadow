@@ -18,6 +18,7 @@ from .engine import ShadowEngine
 from .edge import EdgeClient
 from .service import ServiceClient
 from .shadow_sync import ShadowManifestStore
+from .watcher import LocalChangeWatcher
 from .probe import RemoteProbe
 from .auth import AuthManager
 from .tree import DiffTreeRenderer
@@ -411,30 +412,36 @@ def main(args: Optional[List[str]] = None):
         previous = shadow_snapshot()
         last_pull = 0.0
         log_info("已进入 .gitshadow 静默监听；Git 追踪文件不会被自动打补丁。")
-        try:
-            while not stop_event.wait(0.3):
-                now = time.monotonic()
-                current = shadow_snapshot()
-                if current != previous:
+        with LocalChangeWatcher(repo.root_dir) as local_watcher:
+            if local_watcher.native:
+                log_info("本地使用 Linux inotify 监听 .gitshadow；不支持时自动回退轮询。")
+            try:
+                while not stop_event.is_set():
+                    notified = local_watcher.wait(0.3)
+                    if stop_event.is_set():
+                        break
+                    now = time.monotonic()
+                    current = shadow_snapshot() if (not local_watcher.native or notified) else previous
+                    if current != previous:
+                        try:
+                            submit_projection(include_cloudcli=False)
+                            previous = current
+                            last_pull = now
+                        except Exception as exc:
+                            log_error("Shadow 自动同步失败（保留当前基线，稍后重试）: %s" % exc)
+                            time.sleep(1.0)
+                        continue
+                    if now - last_pull < 2.0:
+                        continue
                     try:
-                        submit_projection(include_cloudcli=False)
-                        previous = current
+                        submit_shadow_pull()
+                        previous = shadow_snapshot()
                         last_pull = now
                     except Exception as exc:
-                        log_error("Shadow 自动同步失败（保留当前基线，稍后重试）: %s" % exc)
-                        time.sleep(1.0)
-                    continue
-                if now - last_pull < 2.0:
-                    continue
-                try:
-                    submit_shadow_pull()
-                    previous = shadow_snapshot()
-                    last_pull = now
-                except Exception as exc:
-                    log_error("远端 Shadow 自动拉取失败（稍后重试）: %s" % exc)
-                    last_pull = now
-        except KeyboardInterrupt:
-            stop_event.set()
+                        log_error("远端 Shadow 自动拉取失败（稍后重试）: %s" % exc)
+                        last_pull = now
+            except KeyboardInterrupt:
+                stop_event.set()
 
     # 4. web 命令兼容重定向 (暂缓/废除独立 web 命令，统一收敛至 run)
     if subcmd == "web":
