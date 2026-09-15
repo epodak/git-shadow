@@ -102,7 +102,7 @@
 ## 当前优先顺序
 
 ```text
-P0.1 真实 CloudCLI 测试边界
+P0.1 真实 CloudCLI 测试边界（核心编排已完成）
 P0.2 VPS service load/unload/status（已完成基础闭环）
 P0.3 Shadow 双向 pull/conflict
 P1.1 retry/resume/断线重连

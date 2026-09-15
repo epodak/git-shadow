@@ -85,7 +85,7 @@ patch.apply                 # 仅在用户显式选择 --wip 时出现
 exec(argv=[...])
 ```
 
-`workspace.create` 只创建项目目录，不等待代码准备。CloudCLI Session 必须紧跟在目录创建之后，让用户可以立即进入会话；`workspace.prepare` 随后在同一个边缘任务中执行 Git clone/init/checkout。`shadow.sync` 执行独立的 Manifest/CAS 原子投影，遇到远端基线变化必须发出冲突事件并让任务失败。`patch.apply` 是一次性 WIP 例外，不属于默认同步路径。
+`workspace.create` 只创建项目目录，不等待代码准备。CloudCLI Session 必须紧跟在目录创建之后，让用户可以立即进入会话；`workspace.prepare` 随后在同一个边缘任务中执行 Git clone/init/checkout。若控制端项目是普通文件夹，则计划携带 `git_enabled=false`，远端只创建/保留目录，不凭空初始化 `.git`。`shadow.sync` 执行独立的 Manifest/CAS 原子投影，遇到远端基线变化必须发出冲突事件并让任务失败。`patch.apply` 是一次性 WIP 例外，不属于默认同步路径。
 
 默认禁止把多个命令拼成一条未校验的 Shell 字符串。`exec` 也只接收 argv 数组，并限制工作目录在远端用户主目录内；动作内部负责超时、进程组回收和失败事件。
 
