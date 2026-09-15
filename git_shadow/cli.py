@@ -1,0 +1,412 @@
+"""
+git_shadow.cli
+CLI 命令行交互主入口：支持探针诊断、SSH凭证同步、CloudCLI Web弹窗与AI Agent智能选择
+"""
+
+import os
+import sys
+import argparse
+import json
+from typing import List, Optional
+
+from . import __version__
+from .scanner import RepoState
+from .engine import ShadowEngine
+from .edge import EdgeClient
+from .probe import RemoteProbe
+from .auth import AuthManager
+from .tree import DiffTreeRenderer
+from .utils import (
+    log_info,
+    log_success,
+    log_warn,
+    log_error,
+    format_size,
+    run_cmd,
+    Colors
+)
+
+BANNER = fr"""{Colors.BOLD}{Colors.CYAN}
+   ____ _ _         ____  _               _
+  / ___(_) |_      / ___|| |__   __ _  __| | _____      __
+ | |  _| | __| ____\___ \| '_ \ / _` |/ _` |/ _ \ \ /\ / /
+ | |_| | | |_ |_____|__) | | | | (_| | (_| | (_) \ V  V /
+  \____|_|\__|     |____/|_| |_|\__,_|\__,_|\___/ \_/\_/
+{Colors.RESET}{Colors.DIM}  Git clones the repo. Shadow overlays the secrets. (v{__version__}){Colors.RESET}
+"""
+
+def print_help():
+    print(BANNER)
+    print(f"""{Colors.BOLD}用法 (Usage):{Colors.RESET}
+  git shadow <command> [options] [host] [args...]
+  git-shadow <command> [options] [host] [args...]
+
+{Colors.BOLD}核心命令 (Commands):{Colors.RESET}
+  {Colors.GREEN}run <host> [agent]{Colors.RESET}  投影并唤起 AI Agent (可指定 cloudcli / opencode / commandcode，不指定则智能挑选)
+                    • 指定 cloudcli 时，0秒乐观拉起 Web 浏览器，后台并发流式同步代码与影子
+                    • 指定终端 Agent 时，极速秒级直通交互终端
+  {Colors.GREEN}probe <host>{Colors.RESET}        诊断探针：感知远端系统、用户主目录、工作区目录树与 AI 工具状态
+  {Colors.GREEN}auth sync <host>{Colors.RESET}    一键净化同步本地 SSH/GitHub 鉴权密钥到远端 Linux，打通 Git 权限
+  {Colors.GREEN}up <host>{Colors.RESET}           一键投影当前工作区到远端，并进入交互式终端
+  {Colors.GREEN}push <host>{Colors.RESET}         仅对齐远端 Git 代码并流式注入本地影子文件，不进入终端
+  {Colors.GREEN}diff{Colors.RESET}                本地自检：以高保真树状图 (Diff Tree) 预览待投影的影子文件与代码改动
+  {Colors.GREEN}pull <host>{Colors.RESET}         从远端对齐拉取最新 Git 代码到本地
+  {Colors.GREEN}edge install <host>{Colors.RESET} 安装/更新 VPS 端 JSONL 边缘执行器
+  {Colors.GREEN}edge status <host> <job>{Colors.RESET} 查询远端任务状态
+
+{Colors.BOLD}选项 (Options):{Colors.RESET}
+  {Colors.YELLOW}-d, --dest <dir>{Colors.RESET}    自定义远端存放目录 (默认自动感知: ~/wkspace/项目名 或 ~/workspace/项目名)
+  {Colors.YELLOW}--no-wip{Colors.RESET}            忽略本地未提交的代码修改 (仅同步已有的 gitignore 影子文件)
+  {Colors.YELLOW}--pull{Colors.RESET}              远端分支对齐时，强制拉取远端 origin 最新提交
+  {Colors.YELLOW}-a, --agent <cmd>{Colors.RESET}   指定在远端运行的 AI 命令
+  {Colors.YELLOW}--provider <name>{Colors.RESET}   CloudCLI 供应商 (codex/claude/cursor/opencode)
+  {Colors.YELLOW}--cloudcli-url <url>{Colors.RESET} VPS 内部 CloudCLI 地址 (默认 http://127.0.0.1:3001)
+  {Colors.YELLOW}-v, --version{Colors.RESET}       输出当前版本号
+  {Colors.YELLOW}-h, --help{Colors.RESET}          查看帮助信息
+
+{Colors.BOLD}使用示例 (Examples):{Colors.RESET}
+  git shadow run aws cloudcli         # 0秒秒开浏览器远程控制台，后台流式对齐代码与影子
+  git shadow run aws opencode         # 极速直通并在远端终端拉起 OpenCode
+  git shadow run aws commandcode      # 极速直通并在远端终端拉起 CommandCode
+  git shadow run aws                  # 自动探测远端已就绪的 AI Agent，列出数字菜单让你挑选
+  git shadow auth sync aws            # 一键打通远端 VPS 的 GitHub SSH 权限
+  git shadow probe aws                # 诊断远端主机系统与环境
+  git shadow diff                     # 查看本地有哪些 .env / 密钥会被影子带走 (树状图呈现)
+  git shadow run aws cloudcli --provider codex  # 远端批量执行并打开专属会话
+""")
+
+
+SUPPORTED_PROVIDERS = ("codex", "claude", "cursor", "opencode")
+
+
+def choose_provider(requested: Optional[str]) -> str:
+    """Choose the provider before CloudCLI creates its immutable session row."""
+    provider = (requested or os.environ.get("GIT_SHADOW_PROVIDER", "")).strip().lower()
+    if provider:
+        if provider not in SUPPORTED_PROVIDERS:
+            raise ValueError("不支持的 AI 供应商: %s (可选: %s)" % (provider, ", ".join(SUPPORTED_PROVIDERS)))
+        return provider
+
+    if not sys.stdin.isatty():
+        log_warn("非交互终端未指定供应商，默认使用 codex；可用 --provider 或 GIT_SHADOW_PROVIDER 覆盖。")
+        return "codex"
+
+    print(f"\n{Colors.BOLD}请选择 CloudCLI AI 供应商:{Colors.RESET}")
+    for index, item in enumerate(SUPPORTED_PROVIDERS, start=1):
+        print(f"  [{index}] {item}")
+    answer = input("请输入序号 [默认 1]: ").strip()
+    if not answer:
+        return SUPPORTED_PROVIDERS[0]
+    try:
+        return SUPPORTED_PROVIDERS[int(answer) - 1]
+    except (ValueError, IndexError) as exc:
+        raise ValueError("无效的供应商选择") from exc
+
+
+def print_edge_event(event: dict) -> None:
+    """Render edge events while retaining the JSONL protocol on the wire."""
+    if event.get("type") == "accepted":
+        log_success("VPS 已接收任务: %s" % event.get("job_id", ""))
+    elif event.get("type") == "ready":
+        log_info("VPS 边缘执行器 RPC 通道已建立")
+    elif event.get("event") == "step.started":
+        log_info("远端开始: %s" % event.get("step", event.get("action", "step")))
+    elif event.get("event") == "output":
+        channel = event.get("channel", "stdout")
+        prefix = "  " if channel == "stdout" else "  [stderr] "
+        print(f"{prefix}{event.get('message', '')}", flush=True)
+    elif event.get("event") == "step.succeeded":
+        log_success("远端完成: %s" % event.get("step", "step"))
+    elif event.get("event") == "session.ready":
+        url = event.get("url", "")
+        log_success("CloudCLI 会话已创建: %s" % url)
+        if url:
+            try:
+                import webbrowser
+                webbrowser.open(str(url))
+            except Exception as exc:
+                log_warn("无法自动打开浏览器，请手动访问 %s (%s)" % (url, exc))
+    elif event.get("event") == "job.completed":
+        log_success("VPS 任务执行完成")
+    elif event.get("event") == "job.failed":
+        log_error("VPS 任务失败: %s" % event.get("error", "unknown error"))
+    elif event.get("type") == "error":
+        log_error("VPS 执行器错误: %s" % event.get("error", "unknown error"))
+
+def cmd_diff(repo: RepoState):
+    """以精美清晰的树状结构 (Diff Tree) 显示本地影子与差异扫描结果"""
+    print(f"\n{Colors.BOLD}🔍 正在扫描工作区投影差异...{Colors.RESET}")
+    print(f"  • 项目名称: {Colors.CYAN}{repo.repo_name}{Colors.RESET}")
+    print(f"  • 当前分支: {Colors.CYAN}{repo.branch}{Colors.RESET}")
+    print(f"  • 远程仓库: {Colors.CYAN}{repo.remote_url or '(未设置 origin，支持 P2P 直推)'}{Colors.RESET}")
+    print(f"  • 工作区状态: {Colors.YELLOW + '已修改 (Dirty)' if repo.is_dirty else Colors.GREEN + '干净 (Clean)'}{Colors.RESET}")
+
+    tree = DiffTreeRenderer(root_name=repo.repo_name, branch=repo.branch)
+
+    # 1. 添加影子文件
+    shadows = repo.scan_shadow_files()
+    for f in shadows:
+        full_p = os.path.join(repo.root_dir, f)
+        sz = os.path.getsize(full_p) if os.path.exists(full_p) else 0
+        tree.add_item(f, kind="shadow", size=sz)
+
+    # 2. 添加未提交的 Git 变动文件
+    wip_files = repo.get_wip_files()
+    for item in wip_files:
+        p = item["path"]
+        full_p = os.path.join(repo.root_dir, p)
+        sz = os.path.getsize(full_p) if os.path.exists(full_p) else 0
+        tree.add_item(p, kind=item["kind"], size=sz)
+
+    print(f"\n{Colors.BOLD}🌳 待投影差异树 (Diff Projection Tree):{Colors.RESET}")
+    print(tree.render())
+
+    # 3. 如果有未提交的 Git 代码修改，显示紧凑的 git diff --stat 摘要
+    if repo.is_dirty:
+        code, stat_out, _ = run_cmd(["git", "diff", "--stat", "HEAD"], cwd=repo.root_dir, check=False)
+        if stat_out.strip():
+            print(f"\n{Colors.BOLD}📝 代码修改明细统计 (Git Diff Stat):{Colors.RESET}")
+            for l in stat_out.splitlines():
+                print(f"  {Colors.DIM}{l}{Colors.RESET}")
+
+
+def main(args: Optional[List[str]] = None):
+    if args is None:
+        args = sys.argv[1:]
+
+    if not args or "-h" in args or "--help" in args or "help" in args:
+        print_help()
+        sys.exit(0)
+
+    if "-v" in args or "--version" in args:
+        print(f"git-shadow v{__version__}")
+        sys.exit(0)
+
+    subcmd = args[0]
+    sub_args = args[1:]
+
+    # 1. 本地自检 diff
+    if subcmd == "diff":
+        repo = RepoState(".")
+        if not repo.is_git:
+            log_error("当前目录不是一个有效的 Git 仓库！")
+            sys.exit(1)
+        cmd_diff(repo)
+        sys.exit(0)
+
+    # 2. auth 子命令族 (例如: git shadow auth sync <host> [--key <key>])
+    if subcmd == "auth":
+        if not sub_args:
+            log_error("用法: git shadow auth sync <host> [--key <key>]")
+            sys.exit(1)
+        auth_action = sub_args[0]
+        if auth_action != "sync" or len(sub_args) < 2:
+            log_error("用法: git shadow auth sync <host> [--key <key>]")
+            sys.exit(1)
+        target_host = sub_args[1]
+
+        spec_key = None
+        if "--key" in sub_args:
+            k_idx = sub_args.index("--key")
+            if k_idx + 1 < len(sub_args):
+                spec_key = sub_args[k_idx + 1]
+
+        repo = RepoState(".")
+        engine = ShadowEngine(repo=repo, remote_host=target_host)
+        mgr = AuthManager(engine, specified_key=spec_key)
+        success = mgr.sync_to_remote()
+        sys.exit(0 if success else 1)
+
+    # 3. probe 探针诊断 (例如: git shadow probe <host>)
+    if subcmd == "probe":
+        if not sub_args:
+            log_error("用法: git shadow probe <host>")
+            sys.exit(1)
+        target_host = sub_args[0]
+        repo = RepoState(".")
+        engine = ShadowEngine(repo=repo, remote_host=target_host)
+        log_info(f"正在全景探测远端主机 [{target_host}] 环境与工具...")
+        probe = RemoteProbe(target_host)
+        probe.scan(engine)
+        probe.display_report()
+        sys.exit(0)
+
+    # 3.5 VPS 边缘执行器治理（不要求当前目录必须是 Git 仓库）
+    if subcmd == "edge":
+        if len(sub_args) < 2:
+            log_error("用法: git shadow edge install <host> | edge status <host> <job_id> | edge resume <host> <job_id>")
+            sys.exit(1)
+        edge_action = sub_args[0]
+        edge_host = sub_args[1]
+        edge_client = EdgeClient(edge_host)
+        if edge_action == "install":
+            sys.exit(0 if edge_client.ensure_installed() else 1)
+        if len(sub_args) < 3:
+            log_error("缺少 job_id")
+            sys.exit(1)
+        job_id = sub_args[2]
+        if edge_action == "status":
+            result = edge_client.status(job_id)
+            if result:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                sys.exit(0 if result.get("found") else 1)
+        elif edge_action == "resume":
+            edge_client.resume(job_id, on_event=print_edge_event)
+            sys.exit(0)
+        log_error("未知 edge 操作: %s" % edge_action)
+        sys.exit(1)
+
+    # 其余命令需要解析标准选项
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("host", help="目标远程主机 (SSH Host)")
+    parser.add_argument("extra_args", nargs="*", help="额外参数或执行命令")
+    parser.add_argument("-d", "--dest", default=None, help="远端目标路径")
+    parser.add_argument("--no-wip", action="store_true", help="不传输未提交修改")
+    parser.add_argument("--pull", action="store_true", help="远端强制拉取")
+    parser.add_argument("-a", "--agent", default=None, help="远端 AI Agent 命令")
+    parser.add_argument("--provider", default=None, help="CloudCLI AI 供应商: codex/claude/cursor/opencode")
+    parser.add_argument("--cloudcli-url", default=None, help="VPS 内部 CloudCLI 地址，默认读取 GIT_SHADOW_CLOUDCLI_BASE_URL")
+
+    try:
+        opts, remaining = parser.parse_known_args(sub_args)
+    except Exception as e:
+        log_error(f"参数解析错误: {e}")
+        print_help()
+        sys.exit(1)
+
+    repo = RepoState(".")
+    if not repo.is_git:
+        log_error("当前目录不是一个有效的 Git 仓库！")
+        sys.exit(1)
+
+    remote_host = opts.host
+    remote_dir = opts.dest
+    with_wip = not opts.no_wip
+
+    engine = ShadowEngine(
+        repo=repo,
+        remote_host=remote_host,
+        remote_dir=remote_dir,
+        with_wip=with_wip
+    )
+
+    # 4. web 命令兼容重定向 (暂缓/废除独立 web 命令，统一收敛至 run)
+    if subcmd == "web":
+        log_warn("提示: 独立 'web' 命令因与具体工具强耦合已暂缓并废除，统一收敛至 'run' 命令。")
+        log_info(f"正在为您自动切换执行: git shadow run {remote_host} cloudcli")
+        subcmd = "run"
+        opts.extra_args = ["cloudcli"]
+
+    # 5. push 命令：仅静默推送
+    if subcmd == "push":
+        log_info(f"正在连接目标主机 [{remote_host}]...")
+        if not engine.prepare_remote_repo(sync_git_pull=opts.pull):
+            sys.exit(1)
+        shadows = repo.scan_shadow_files()
+        engine.inject_shadow_files(shadows)
+        engine.apply_wip_patch()
+        log_success(f"已成功将工作区影子推送到 {remote_host}:{engine.remote_dir}")
+
+    # 6. run 命令：统一工作负载运行入口 (支持 Web Remote 与终端 AI Agent)
+    elif subcmd == "run":
+        # 确定要运行的目标 agent / 命令
+        run_target = None
+        if opts.extra_args:
+            run_target = " ".join(opts.extra_args)
+        elif opts.agent:
+            run_target = opts.agent
+
+        preferred_ws = None
+        if not run_target:
+            # 仅在未指定目标时，才调用全景探针扫描以呈现交互式选择菜单
+            probe = RemoteProbe(remote_host)
+            probe.scan(engine)
+            preferred_ws = probe.get_preferred_workspace_dir(repo.repo_name) if not remote_dir else None
+
+            available_agents = probe.get_available_agents()
+            print(f"\n{Colors.BOLD}🤖 远端主机 [{remote_host}] 就绪的环境与 AI 智能体:{Colors.RESET}")
+            for idx, ag in enumerate(available_agents, start=1):
+                icon = "🌐" if ag.get("type") == "web" else "💻"
+                print(f"  [{idx}] {icon} {ag['name']}")
+
+            print(f"\n请输入序号以启动对应环境 [默认 1]: ", end="", flush=True)
+            try:
+                user_choice = sys.stdin.readline().strip()
+                choice_idx = int(user_choice) if user_choice else 1
+                if 1 <= choice_idx <= len(available_agents):
+                    selected = available_agents[choice_idx - 1]
+                    if selected.get("type") == "web":
+                        run_target = "cloudcli"
+                    else:
+                        run_target = selected.get("cmd")
+                else:
+                    run_target = "$SHELL -l"
+            except Exception:
+                run_target = "$SHELL -l"
+
+        # 分流 A：Web Remote 远程控制台 (如 CloudCLI)
+        if run_target == "cloudcli":
+            try:
+                provider = choose_provider(opts.provider)
+            except ValueError as exc:
+                log_error(str(exc))
+                sys.exit(1)
+
+            # 【乐观先行】：先打开工作台；任务完成后再自动跳到 session 深链。
+            engine.open_cloudcli_optimistic()
+            if preferred_ws:
+                engine.remote_dir = preferred_ws
+            edge_client = EdgeClient(remote_host)
+            if not edge_client.ensure_installed():
+                sys.exit(1)
+
+            plan = engine.build_edge_plan(
+                provider=provider,
+                shadow_files=repo.scan_shadow_files(),
+                sync_git_pull=opts.pull,
+                public_url=os.environ.get("GIT_SHADOW_CLOUDCLI_PUBLIC_URL", "https://cli.daduiot.com"),
+                cloudcli_base_url=opts.cloudcli_url,
+            )
+            plan["job_id"] = edge_client.new_job_id()
+            try:
+                edge_client.submit(plan, on_event=print_edge_event)
+            except Exception as exc:
+                log_error("VPS 边缘任务未完成: %s" % exc)
+                sys.exit(1)
+            sys.exit(0)
+
+        # 分流 B：终端交互型 Agent (如 opencode / commandcode / $SHELL)
+        else:
+            if not engine.prepare_remote_repo(sync_git_pull=opts.pull, probe_ws_dir=preferred_ws):
+                sys.exit(1)
+            shadows = repo.scan_shadow_files()
+            engine.inject_shadow_files(shadows)
+            engine.apply_wip_patch()
+            engine.launch_agent_or_shell(agent_cmd=run_target)
+
+    # 7. up 命令：投影并进入
+    elif subcmd == "up":
+        probe = RemoteProbe(remote_host)
+        probe.scan(engine)
+        preferred_ws = probe.get_preferred_workspace_dir(repo.repo_name) if not remote_dir else None
+
+        if not engine.prepare_remote_repo(sync_git_pull=opts.pull, probe_ws_dir=preferred_ws):
+            sys.exit(1)
+        shadows = repo.scan_shadow_files()
+        engine.inject_shadow_files(shadows)
+        engine.apply_wip_patch()
+        engine.launch_agent_or_shell(agent_cmd=opts.agent)
+
+    # 8. pull 命令：本地拉取
+    elif subcmd == "pull":
+        log_info("正在从远端 Git 仓库拉取最新提交到本地...")
+        import subprocess
+        subprocess.run(["git", "pull"])
+
+    else:
+        log_error(f"未知子命令: {subcmd}")
+        print_help()
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

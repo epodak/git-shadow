@@ -1,0 +1,14 @@
+# .gitshadow — 影子投影契约
+# 遵循 ADR-2026-09-15 契约:
+# 明确声明在受 .gitignore 保护的私有资产中，哪些被合法授权流式投射到远端云工作区
+
+# 1. 环境变量与私密配置
+.env*
+*.secret
+*.key
+*.pem
+config.local.*
+
+# 2. 本地开发日志与设计决策 (供远端 AI 理解上下文)
+_dev_log/
+*.local.md
