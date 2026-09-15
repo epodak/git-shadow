@@ -20,7 +20,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 | :--- | :--- | :--- |
 | **一键启动 AI (统一入口)** | `git shadow run <host> [agent]` | **乐观先行**：0 秒弹出浏览器 (Web AI) 或连通终端 (TTY AI)，**后台并发打入代码与影子**，零感知等待 |
 | **数字菜单智能挑选** | `git shadow run <host>` | 自动探查远端已就绪的 AI Agent，呈现数字菜单供一键挑选启动 |
-| **前台随行实时监听** | `git shadow run <host> [agent] --watch` | 范式 A：本地文件保存即 300ms 防抖增量推送，**终端关闭即自动随行销毁，零残留** |
+| **前台随行实时监听** | `git shadow run <host> [agent] --watch` | 范式 A：本地 `.gitshadow` 变化推送、远端变化定期拉取，**终端关闭即自动随行销毁，零残留** |
 | **Linux 后台守护治理** | `git shadow service <host> load` | 范式 B：将增量同步守护挂载到远端 Linux 后台，**带 10 分钟心跳租约超时自毁，彻底释放 VPS 内存** |
 | **注销 Linux 守护** | `git shadow service <host> unload` | 优雅停止远端 watcher 进程，清除 PID 锁与句柄，100% 归还物理内存 |
 | **检查守护状态** | `git shadow service <host> status` | 查看远端守护进程 PID、运行时间、内存开销与租约剩余秒数 |
@@ -67,7 +67,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 - 传输使用同一条干净 SSH 通道上的双向 JSONL：提交同步返回 `accepted + job_id`，执行过程异步广播 `step.started`、`output`、`session.ready`、`job.completed` 或 `job.failed`。
 - VPS 为每个 Job 持久化脱敏的 `request.json`、`state.json` 和带单调 `seq` 的 `events.ndjson`；本地断线后必须使用 `resume + after_seq` 重放，不得重新猜测最新会话。
 - 默认只允许结构化动作（`workspace.create`、`cloudcli.session`、`workspace.prepare`、`shadow.sync` 和 argv 数组形式的 `exec`），禁止无校验的 Shell 命令串拼接；`patch.apply` 仅在用户显式传入 `--wip` 时出现。
-- `workspace.create` 后立即创建 CloudCLI Session；随后 `workspace.prepare` 才执行 Git clone/init/checkout，`shadow.sync` 携带 `base_hash/local_hash` 并由 VPS 执行 CAS。若 CAS 冲突，任务必须广播失败，禁止伪造“工作区已准备完成”或重复创建 Session。
+- `workspace.create` 后立即创建 CloudCLI Session；随后 `workspace.prepare` 才执行 Git clone/init/checkout，`shadow.sync` 和 `shadow.pull` 携带 `base_hash/local_hash` 并由 VPS 执行 CAS。若 CAS 冲突，任务必须广播失败，禁止伪造“工作区已准备完成”或重复创建 Session。
 - CloudCLI 会话必须由同一个远端 Job 明确创建，收到 `session.ready` 后才打开 `/session/<id>`；禁止直接扫描 SQLite 选择“最新会话”。
 - CloudCLI provider 必须在 Session 创建前确定；命令行使用 `--provider`，交互模式使用本地菜单。当前数据库 provider 非空，不创建 provider-neutral 临时 Session。
 - 短任务完成即退出；长期服务继续遵循 600 秒 Lease 心跳和超时自毁契约。

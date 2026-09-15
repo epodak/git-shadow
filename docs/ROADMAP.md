@@ -53,7 +53,7 @@
 - [ ] 本地在未修改时安全接收远端变更
 - [ ] 本地和 VPS 同时修改时生成两端冲突副本，绝不静默覆盖
 - [ ] 删除、空文件、重命名和目录层级的测试
-- [ ] 本地 watcher 同时处理 push lane 与 pull lane
+- [x] 本地 watcher 同时处理已登记 Shadow 的 push lane 与 pull lane
 - [ ] Git 追踪文件继续只通过 Git，不被 Shadow watcher 接管
 
 ## 4. P1：任务可靠性

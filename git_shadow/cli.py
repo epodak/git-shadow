@@ -140,6 +140,8 @@ def print_edge_event(event: dict) -> None:
         log_error("VPS 任务失败: %s" % event.get("error", "unknown error"))
     elif event.get("event") == "shadow.conflict":
         log_error("影子文件 CAS 冲突: %s（远端未覆盖，已保存冲突副本 %s）" % (event.get("path", ""), event.get("conflict_path", "")))
+    elif event.get("event") == "shadow.remote":
+        log_info("已接收远端 Shadow 变化: %s" % event.get("path", ""))
     elif event.get("type") == "error":
         log_error("VPS 执行器错误: %s" % event.get("error", "unknown error"))
 
@@ -358,18 +360,30 @@ def main(args: Optional[List[str]] = None):
         """Watch only the Shadow lane; tracked source files remain Git-owned."""
         stop_event = stop_event or threading.Event()
         previous = shadow_snapshot()
+        last_pull = 0.0
         log_info("已进入 .gitshadow 静默监听；Git 追踪文件不会被自动打补丁。")
         try:
             while not stop_event.wait(0.3):
+                now = time.monotonic()
                 current = shadow_snapshot()
-                if current == previous:
+                if current != previous:
+                    try:
+                        submit_projection(include_cloudcli=False)
+                        previous = current
+                        last_pull = now
+                    except Exception as exc:
+                        log_error("Shadow 自动同步失败（保留当前基线，稍后重试）: %s" % exc)
+                        time.sleep(1.0)
+                    continue
+                if now - last_pull < 2.0:
                     continue
                 try:
-                    submit_projection(include_cloudcli=False)
-                    previous = current
+                    submit_shadow_pull()
+                    previous = shadow_snapshot()
+                    last_pull = now
                 except Exception as exc:
-                    log_error("Shadow 自动同步失败（保留当前基线，稍后重试）: %s" % exc)
-                    time.sleep(1.0)
+                    log_error("远端 Shadow 自动拉取失败（稍后重试）: %s" % exc)
+                    last_pull = now
         except KeyboardInterrupt:
             stop_event.set()
 

@@ -5,6 +5,7 @@ import pathlib
 import shutil
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 from git_shadow.edge_agent import EdgeError, EdgeExecutor, EventJournal
 from git_shadow.shadow_sync import ShadowManifestStore
@@ -104,6 +105,24 @@ class TestShadowPull(unittest.TestCase):
         saved = json.loads(journal.events_path.read_text(encoding="utf-8").strip())
         self.assertEqual(wire_event["content_b64"], content)
         self.assertEqual(saved["content_b64"], "<redacted>")
+
+    def test_pull_plan_contains_workspace_creation_and_shadow_pull(self):
+        from git_shadow.engine import ShadowEngine
+
+        repo = SimpleNamespace(
+            root_dir=str(self.local),
+            remote_url="https://example.invalid/repo.git",
+            branch="main",
+            commit="abc123",
+            scan_shadow_files=lambda: [".env"],
+        )
+        engine = ShadowEngine.__new__(ShadowEngine)
+        engine.repo = repo
+        engine.remote_dir = str(self.remote)
+        store = ShadowManifestStore(str(self.local), state_root=str(self.root / "local-state"))
+        plan = engine.build_shadow_pull_plan(shadow_files=[".env"], shadow_store=store)
+        self.assertEqual([step["action"] for step in plan["steps"]], ["workspace.create", "shadow.pull"])
+        self.assertEqual(plan["steps"][1]["entries"][0]["path"], ".env")
 
 
 if __name__ == "__main__":
