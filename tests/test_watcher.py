@@ -18,7 +18,7 @@ class TestLocalChangeWatcher(unittest.TestCase):
         with LocalChangeWatcher(str(self.root)) as watcher:
             native = watcher.native
             (self.root / ".env").write_text("value\n", encoding="utf-8")
-            notified = watcher.wait(1.0)
+            notified = watcher.wait_for_quiet(0.1) if native else watcher.wait(1.0)
             if native:
                 self.assertTrue(notified)
             else:
@@ -32,7 +32,7 @@ class TestLocalChangeWatcher(unittest.TestCase):
             nested.mkdir()
             self.assertTrue(watcher.wait(1.0))
             (nested / ".env").write_text("nested\n", encoding="utf-8")
-            self.assertTrue(watcher.wait(1.0))
+            self.assertTrue(watcher.wait_for_quiet(0.1))
 
 
 if __name__ == "__main__":

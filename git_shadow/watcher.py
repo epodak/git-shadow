@@ -128,6 +128,17 @@ class LocalChangeWatcher:
             self.native = False
             return False
 
+    def wait_for_quiet(self, quiet_period: float) -> bool:
+        """Wait for one event and then a quiet window, coalescing save bursts."""
+        if not self.native:
+            return False
+        changed = self.wait(quiet_period)
+        if not changed:
+            return False
+        while self.wait(quiet_period):
+            pass
+        return True
+
     def close(self) -> None:
         if self.fd is not None:
             try:

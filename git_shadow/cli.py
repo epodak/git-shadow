@@ -443,7 +443,7 @@ def main(args: Optional[List[str]] = None):
                 log_info("本地使用 Linux inotify 监听 .gitshadow；不支持时自动回退轮询。")
             try:
                 while not stop_event.is_set():
-                    notified = local_watcher.wait(0.3)
+                    notified = local_watcher.wait_for_quiet(0.3) if local_watcher.native else local_watcher.wait(0.3)
                     if stop_event.is_set():
                         break
                     now = time.monotonic()

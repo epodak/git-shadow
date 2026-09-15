@@ -75,7 +75,7 @@
 - [x] Linux inotify 监听器
 - [ ] macOS FSEvents、Windows ReadDirectoryChangesW 监听器
 - [x] 轮询作为兼容 fallback
-- [ ] watcher 防抖、合并提交和失败退避
+- [x] watcher 防抖、合并提交和失败退避
 - [ ] 安静模式与可读进度模式
 - [ ] 端到端首次启动耗时和重复启动耗时指标
 
