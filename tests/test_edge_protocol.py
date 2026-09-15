@@ -92,6 +92,25 @@ class TestEdgeProtocol(unittest.TestCase):
         self.assertEqual(journal.request_path.stat().st_mode & 0o077, 0)
         self.assertEqual(journal.events_path.stat().st_mode & 0o077, 0)
 
+    def test_runtime_diagnostics_scrub_cloudcli_credentials(self):
+        from git_shadow.edge_agent import EdgeExecutor
+
+        previous = os.environ.get("GIT_SHADOW_CLOUDCLI_TOKEN")
+        os.environ["GIT_SHADOW_CLOUDCLI_TOKEN"] = "token-for-test"
+        executor = EdgeExecutor(str(self.state_dir / "state-secret-scrub"))
+        try:
+            wire = executor.emit_event("job-secret-scrub", "output", message="token-for-test leaked")
+            self.assertEqual(wire["message"], "<redacted> leaked")
+            saved = json.loads((self.state_dir / "state-secret-scrub" / "runs" / "job-secret-scrub" / "events.ndjson").read_text())
+            self.assertNotIn("token-for-test", json.dumps(saved))
+        finally:
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
+            if previous is None:
+                os.environ.pop("GIT_SHADOW_CLOUDCLI_TOKEN", None)
+            else:
+                os.environ["GIT_SHADOW_CLOUDCLI_TOKEN"] = previous
+
     def test_expired_lease_cancels_running_step(self):
         from git_shadow.edge_agent import EdgeExecutor
 

@@ -50,6 +50,9 @@ class QuietEdgeExecutor:
                 return
 
             def emit_event(self, job_id: str, event: str, **data: Any) -> Dict[str, Any]:
+                for field in ("message", "error", "detail"):
+                    if field in data and data[field] is not None:
+                        data[field] = module.scrub_text(str(data[field]))
                 record = self._jobs.get(job_id)
                 journal = record["journal"] if record is not None else module.EventJournal(self.state_root, job_id)
                 payload = journal.append({"type": "event", "job_id": job_id, "event": event, **data})

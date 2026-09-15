@@ -72,6 +72,16 @@ def redact(value: Any) -> Any:
     return value
 
 
+def scrub_text(value: str) -> str:
+    """Remove configured credential values from live and durable diagnostics."""
+    result = str(value)
+    for name in ("GIT_SHADOW_CLOUDCLI_TOKEN", "GIT_SHADOW_CLOUDCLI_API_KEY"):
+        secret = os.environ.get(name, "")
+        if secret:
+            result = result.replace(secret, "<redacted>")
+    return result
+
+
 def ensure_inside(path_value: str, root: pathlib.Path) -> pathlib.Path:
     """Resolve a path and prevent the executor escaping the user's home."""
     candidate = pathlib.Path(path_value).expanduser()
@@ -228,6 +238,9 @@ class EdgeExecutor:
             sys.stdout.flush()
 
     def emit_event(self, job_id: str, event: str, **data: Any) -> Dict[str, Any]:
+        for field in ("message", "error", "detail"):
+            if field in data and data[field] is not None:
+                data[field] = scrub_text(str(data[field]))
         record = self._jobs.get(job_id)
         if record is None:
             journal = EventJournal(self.state_root, job_id)
@@ -709,10 +722,10 @@ class EdgeExecutor:
             with urllib.request.urlopen(request, timeout=60) as response:
                 body = response.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[-1000:]
+            detail = scrub_text(exc.read().decode("utf-8", "replace")[-1000:])
             raise EdgeError("CloudCLI API returned HTTP %s: %s" % (exc.code, detail)) from exc
         except urllib.error.URLError as exc:
-            raise EdgeError("CloudCLI API unavailable: %s" % exc.reason) from exc
+            raise EdgeError("CloudCLI API unavailable: %s" % scrub_text(str(exc.reason))) from exc
         try:
             parsed = json.loads(body) if body else {}
         except json.JSONDecodeError as exc:
