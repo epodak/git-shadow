@@ -59,7 +59,7 @@
                ┌────────────────────────────┴───────────────────────────┐
                ▼                                                        ▼
     【自生注入 (Self-Inject)】                               【影子投影 (Shadow-Push)】
-    git shadow skill init                                   git shadow web / push
+    git shadow skill init                                   git shadow run / push
     向任意新工程自动注入技能规范                                同步至远端 Linux VPS 工作区
                │                                                        │
                ▼                                                        ▼
@@ -77,6 +77,6 @@
 
 ## 3. Consequences (收益与演进)
 
-1. **零学习成本**：人类开发者只需让 AI “帮我把代码推到 aws 并打开 web”，AI 会自动根据 skill 精准调用 `git shadow web aws`，无需人类背诵参数；
+1. **零学习成本**：人类开发者只需让 AI “帮我把代码推到 aws 并打开 CloudCLI”，AI 会自动根据 skill 精准调用 `git shadow run aws cloudcli`，无需人类背诵参数；
 2. **防腐防衰老**：开发新功能与维护技能文档合二为一，文档永远与最新实现同频；
 3. **生态可自举**：从一个工具演变为一套可被其他项目轻松吸收的 AI 协作标准件。

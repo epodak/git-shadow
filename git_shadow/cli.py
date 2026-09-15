@@ -7,12 +7,16 @@ import os
 import sys
 import argparse
 import json
+import hashlib
+import threading
+import time
 from typing import List, Optional
 
 from . import __version__
 from .scanner import RepoState
 from .engine import ShadowEngine
 from .edge import EdgeClient
+from .shadow_sync import ShadowManifestStore
 from .probe import RemoteProbe
 from .auth import AuthManager
 from .tree import DiffTreeRenderer
@@ -48,15 +52,17 @@ def print_help():
   {Colors.GREEN}probe <host>{Colors.RESET}        诊断探针：感知远端系统、用户主目录、工作区目录树与 AI 工具状态
   {Colors.GREEN}auth sync <host>{Colors.RESET}    一键净化同步本地 SSH/GitHub 鉴权密钥到远端 Linux，打通 Git 权限
   {Colors.GREEN}up <host>{Colors.RESET}           一键投影当前工作区到远端，并进入交互式终端
-  {Colors.GREEN}push <host>{Colors.RESET}         仅对齐远端 Git 代码并流式注入本地影子文件，不进入终端
+  {Colors.GREEN}push <host>{Colors.RESET}         通过边缘任务对齐 Git 基线并执行 .gitshadow CAS，不进入终端
   {Colors.GREEN}diff{Colors.RESET}                本地自检：以高保真树状图 (Diff Tree) 预览待投影的影子文件与代码改动
   {Colors.GREEN}pull <host>{Colors.RESET}         从远端对齐拉取最新 Git 代码到本地
   {Colors.GREEN}edge install <host>{Colors.RESET} 安装/更新 VPS 端 JSONL 边缘执行器
   {Colors.GREEN}edge status <host> <job>{Colors.RESET} 查询远端任务状态
+  {Colors.GREEN}run <host> [agent] --watch{Colors.RESET} 仅自动监听并同步 .gitshadow，Git 代码仍走 Git
 
 {Colors.BOLD}选项 (Options):{Colors.RESET}
   {Colors.YELLOW}-d, --dest <dir>{Colors.RESET}    自定义远端存放目录 (默认自动感知: ~/wkspace/项目名 或 ~/workspace/项目名)
-  {Colors.YELLOW}--no-wip{Colors.RESET}            忽略本地未提交的代码修改 (仅同步已有的 gitignore 影子文件)
+  {Colors.YELLOW}--wip{Colors.RESET}               显式把未提交的 Git 修改作为一次性补丁投影；默认不传输
+  {Colors.YELLOW}--watch{Colors.RESET}             保持本地进程运行，静默监听 .gitshadow 变化并提交 CAS 任务
   {Colors.YELLOW}--pull{Colors.RESET}              远端分支对齐时，强制拉取远端 origin 最新提交
   {Colors.YELLOW}-a, --agent <cmd>{Colors.RESET}   指定在远端运行的 AI 命令
   {Colors.YELLOW}--provider <name>{Colors.RESET}   CloudCLI 供应商 (codex/claude/cursor/opencode)
@@ -130,6 +136,8 @@ def print_edge_event(event: dict) -> None:
         log_success("VPS 任务执行完成")
     elif event.get("event") == "job.failed":
         log_error("VPS 任务失败: %s" % event.get("error", "unknown error"))
+    elif event.get("event") == "shadow.conflict":
+        log_error("影子文件 CAS 冲突: %s（远端未覆盖，已保存冲突副本 %s）" % (event.get("path", ""), event.get("conflict_path", "")))
     elif event.get("type") == "error":
         log_error("VPS 执行器错误: %s" % event.get("error", "unknown error"))
 
@@ -261,7 +269,9 @@ def main(args: Optional[List[str]] = None):
     parser.add_argument("host", help="目标远程主机 (SSH Host)")
     parser.add_argument("extra_args", nargs="*", help="额外参数或执行命令")
     parser.add_argument("-d", "--dest", default=None, help="远端目标路径")
-    parser.add_argument("--no-wip", action="store_true", help="不传输未提交修改")
+    parser.add_argument("--wip", action="store_true", help="显式传输未提交修改（一次性 WIP 补丁）")
+    parser.add_argument("--no-wip", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--watch", action="store_true", help="持续监听 .gitshadow 变化")
     parser.add_argument("--pull", action="store_true", help="远端强制拉取")
     parser.add_argument("-a", "--agent", default=None, help="远端 AI Agent 命令")
     parser.add_argument("--provider", default=None, help="CloudCLI AI 供应商: codex/claude/cursor/opencode")
@@ -281,7 +291,7 @@ def main(args: Optional[List[str]] = None):
 
     remote_host = opts.host
     remote_dir = opts.dest
-    with_wip = not opts.no_wip
+    with_wip = bool(opts.wip and not opts.no_wip)
 
     engine = ShadowEngine(
         repo=repo,
@@ -289,6 +299,60 @@ def main(args: Optional[List[str]] = None):
         remote_dir=remote_dir,
         with_wip=with_wip
     )
+    shadow_store = ShadowManifestStore(repo.root_dir)
+
+    def submit_projection(include_cloudcli: bool = False, provider: Optional[str] = None):
+        edge_client = EdgeClient(remote_host)
+        if not edge_client.ensure_installed():
+            raise RuntimeError("VPS 边缘执行器不可用")
+        plan = engine.build_edge_plan(
+            provider=provider,
+            shadow_files=repo.scan_shadow_files(),
+            sync_git_pull=opts.pull,
+            public_url=os.environ.get("GIT_SHADOW_CLOUDCLI_PUBLIC_URL", "https://cli.daduiot.com"),
+            cloudcli_base_url=opts.cloudcli_url,
+            include_wip=with_wip,
+            include_cloudcli=include_cloudcli,
+            shadow_store=shadow_store,
+        )
+        plan["job_id"] = edge_client.new_job_id()
+
+        def on_event(event: dict) -> None:
+            print_edge_event(event)
+            shadow_store.consume_event(event)
+
+        return edge_client.submit(plan, on_event=on_event), plan
+
+    def shadow_snapshot():
+        snapshot = {}
+        for relative_path in repo.scan_shadow_files():
+            path = os.path.join(repo.root_dir, relative_path)
+            if os.path.isfile(path):
+                digest = hashlib.sha256()
+                with open(path, "rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                snapshot[relative_path] = digest.hexdigest()
+        return snapshot
+
+    def watch_shadow(stop_event: Optional[threading.Event] = None) -> None:
+        """Watch only the Shadow lane; tracked source files remain Git-owned."""
+        stop_event = stop_event or threading.Event()
+        previous = shadow_snapshot()
+        log_info("已进入 .gitshadow 静默监听；Git 追踪文件不会被自动打补丁。")
+        try:
+            while not stop_event.wait(0.3):
+                current = shadow_snapshot()
+                if current == previous:
+                    continue
+                try:
+                    submit_projection(include_cloudcli=False)
+                    previous = current
+                except Exception as exc:
+                    log_error("Shadow 自动同步失败（保留当前基线，稍后重试）: %s" % exc)
+                    time.sleep(1.0)
+        except KeyboardInterrupt:
+            stop_event.set()
 
     # 4. web 命令兼容重定向 (暂缓/废除独立 web 命令，统一收敛至 run)
     if subcmd == "web":
@@ -299,13 +363,13 @@ def main(args: Optional[List[str]] = None):
 
     # 5. push 命令：仅静默推送
     if subcmd == "push":
-        log_info(f"正在连接目标主机 [{remote_host}]...")
-        if not engine.prepare_remote_repo(sync_git_pull=opts.pull):
+        log_info(f"正在连接目标主机 [{remote_host}]，提交分层同步任务...")
+        try:
+            _, plan = submit_projection(include_cloudcli=False)
+        except Exception as exc:
+            log_error("VPS 分层同步任务未完成: %s" % exc)
             sys.exit(1)
-        shadows = repo.scan_shadow_files()
-        engine.inject_shadow_files(shadows)
-        engine.apply_wip_patch()
-        log_success(f"已成功将工作区影子推送到 {remote_host}:{engine.remote_dir}")
+        log_success(f"已成功同步 Git 基线与 .gitshadow 到 {remote_host}:{plan['project_path']}")
 
     # 6. run 命令：统一工作负载运行入口 (支持 Web Remote 与终端 AI Agent)
     elif subcmd == "run":
@@ -356,33 +420,36 @@ def main(args: Optional[List[str]] = None):
             engine.open_cloudcli_optimistic()
             if preferred_ws:
                 engine.remote_dir = preferred_ws
-            edge_client = EdgeClient(remote_host)
-            if not edge_client.ensure_installed():
-                sys.exit(1)
-
-            plan = engine.build_edge_plan(
-                provider=provider,
-                shadow_files=repo.scan_shadow_files(),
-                sync_git_pull=opts.pull,
-                public_url=os.environ.get("GIT_SHADOW_CLOUDCLI_PUBLIC_URL", "https://cli.daduiot.com"),
-                cloudcli_base_url=opts.cloudcli_url,
-            )
-            plan["job_id"] = edge_client.new_job_id()
             try:
-                edge_client.submit(plan, on_event=print_edge_event)
+                submit_projection(include_cloudcli=True, provider=provider)
             except Exception as exc:
                 log_error("VPS 边缘任务未完成: %s" % exc)
                 sys.exit(1)
+            if opts.watch:
+                watch_shadow()
             sys.exit(0)
 
         # 分流 B：终端交互型 Agent (如 opencode / commandcode / $SHELL)
         else:
-            if not engine.prepare_remote_repo(sync_git_pull=opts.pull, probe_ws_dir=preferred_ws):
+            if preferred_ws:
+                engine.remote_dir = preferred_ws
+            try:
+                _, plan = submit_projection(include_cloudcli=False)
+            except Exception as exc:
+                log_error("VPS 分层同步任务未完成: %s" % exc)
                 sys.exit(1)
-            shadows = repo.scan_shadow_files()
-            engine.inject_shadow_files(shadows)
-            engine.apply_wip_patch()
-            engine.launch_agent_or_shell(agent_cmd=run_target)
+            engine.remote_dir = plan["project_path"]
+            if opts.watch:
+                stop_watch = threading.Event()
+                watcher = threading.Thread(target=watch_shadow, args=(stop_watch,), daemon=True)
+                watcher.start()
+                try:
+                    engine.launch_agent_or_shell(agent_cmd=run_target)
+                finally:
+                    stop_watch.set()
+                    watcher.join(timeout=2)
+            else:
+                engine.launch_agent_or_shell(agent_cmd=run_target)
 
     # 7. up 命令：投影并进入
     elif subcmd == "up":
@@ -390,12 +457,25 @@ def main(args: Optional[List[str]] = None):
         probe.scan(engine)
         preferred_ws = probe.get_preferred_workspace_dir(repo.repo_name) if not remote_dir else None
 
-        if not engine.prepare_remote_repo(sync_git_pull=opts.pull, probe_ws_dir=preferred_ws):
+        if preferred_ws:
+            engine.remote_dir = preferred_ws
+        try:
+            _, plan = submit_projection(include_cloudcli=False)
+        except Exception as exc:
+            log_error("VPS 分层同步任务未完成: %s" % exc)
             sys.exit(1)
-        shadows = repo.scan_shadow_files()
-        engine.inject_shadow_files(shadows)
-        engine.apply_wip_patch()
-        engine.launch_agent_or_shell(agent_cmd=opts.agent)
+        engine.remote_dir = plan["project_path"]
+        if opts.watch:
+            stop_watch = threading.Event()
+            watcher = threading.Thread(target=watch_shadow, args=(stop_watch,), daemon=True)
+            watcher.start()
+            try:
+                engine.launch_agent_or_shell(agent_cmd=opts.agent)
+            finally:
+                stop_watch.set()
+                watcher.join(timeout=2)
+        else:
+            engine.launch_agent_or_shell(agent_cmd=opts.agent)
 
     # 8. pull 命令：本地拉取
     elif subcmd == "pull":

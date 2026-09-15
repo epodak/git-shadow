@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import os
 import pathlib
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 from git_shadow.edge import EdgeClient, clean_ssh_args
 
@@ -114,6 +116,128 @@ class TestEdgeProtocol(unittest.TestCase):
         self.assertIn("lease", state["error"])
         executor._stop.set()
         executor._lease_thread.join(timeout=2)
+
+    def test_shadow_sync_applies_against_matching_base(self):
+        from git_shadow.edge_agent import EdgeExecutor
+
+        target = self.workspace / "project"
+        target.mkdir()
+        shadow_path = target / ".env"
+        shadow_path.write_text("REMOTE_BASE\n", encoding="utf-8")
+        payload = b"LOCAL_NEXT\n"
+        executor = EdgeExecutor(str(self.state_dir / "state-cas-apply"))
+        try:
+            executor.submit(
+                {
+                    "type": "submit",
+                    "job_id": "job-shadow-apply",
+                    "steps": [
+                        {
+                            "id": "shadow",
+                            "action": "shadow.sync",
+                            "target": str(target),
+                            "entries": [
+                                {
+                                    "path": ".env",
+                                    "base_hash": hashlib.sha256(b"REMOTE_BASE\n").hexdigest(),
+                                    "local_hash": hashlib.sha256(payload).hexdigest(),
+                                    "content_b64": base64.b64encode(payload).decode("ascii"),
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+            worker = executor._jobs["job-shadow-apply"]["worker"]
+            worker.join(timeout=8)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(shadow_path.read_bytes(), payload)
+            state = json.loads((self.state_dir / "state-cas-apply" / "runs" / "job-shadow-apply" / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["status"], "completed")
+        finally:
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
+
+    def test_shadow_sync_preserves_remote_change_and_reports_conflict(self):
+        from git_shadow.edge_agent import EdgeExecutor
+
+        target = self.workspace / "project-conflict"
+        target.mkdir()
+        shadow_path = target / ".env"
+        shadow_path.write_text("REMOTE_CHANGED\n", encoding="utf-8")
+        payload = b"LOCAL_NEXT\n"
+        executor = EdgeExecutor(str(self.state_dir / "state-cas-conflict"))
+        try:
+            executor.submit(
+                {
+                    "type": "submit",
+                    "job_id": "job-shadow-conflict",
+                    "steps": [
+                        {
+                            "id": "shadow",
+                            "action": "shadow.sync",
+                            "target": str(target),
+                            "entries": [
+                                {
+                                    "path": ".env",
+                                    "base_hash": hashlib.sha256(b"REMOTE_BASE\n").hexdigest(),
+                                    "local_hash": hashlib.sha256(payload).hexdigest(),
+                                    "content_b64": base64.b64encode(payload).decode("ascii"),
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+            worker = executor._jobs["job-shadow-conflict"]["worker"]
+            worker.join(timeout=8)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(shadow_path.read_text(encoding="utf-8"), "REMOTE_CHANGED\n")
+            target_key = hashlib.sha256(str(target).encode("utf-8")).hexdigest()[:32]
+            conflict = self.state_dir / "state-cas-conflict" / "conflicts" / target_key / "job-shadow-conflict" / ".env"
+            self.assertEqual(conflict.read_bytes(), payload)
+            state = json.loads((self.state_dir / "state-cas-conflict" / "runs" / "job-shadow-conflict" / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["status"], "failed")
+            self.assertIn("shadow CAS conflict", state["error"])
+        finally:
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
+
+    def test_local_manifest_records_acknowledged_hash_only(self):
+        from git_shadow.shadow_sync import ShadowManifestStore
+
+        project = self.state_dir / "local-project"
+        project.mkdir()
+        secret = project / ".env"
+        secret.write_text("private-value\n", encoding="utf-8")
+        store = ShadowManifestStore(str(project), state_root=str(self.state_dir / "local-state"))
+        entries = store.build_entries([".env"])
+        self.assertEqual(len(entries), 1)
+        self.assertIsNone(entries[0]["base_hash"])
+        store.consume_event({"event": "shadow.applied", "path": ".env", "local_hash": entries[0]["local_hash"]})
+        saved = json.loads(store.path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["files"][".env"]["synced_hash"], entries[0]["local_hash"])
+        self.assertNotIn("private-value", store.path.read_text(encoding="utf-8"))
+
+    def test_wip_patch_is_not_in_default_edge_plan(self):
+        from git_shadow.engine import ShadowEngine
+
+        repo = SimpleNamespace(
+            root_dir=str(self.workspace),
+            remote_url="https://example.invalid/repo.git",
+            branch="main",
+            commit="abc123",
+            is_dirty=True,
+            scan_shadow_files=lambda: [],
+            capture_wip_patch=lambda: "diff --git a/file b/file\n",
+        )
+        engine = ShadowEngine.__new__(ShadowEngine)
+        engine.repo = repo
+        engine.remote_dir = str(self.workspace / "project-plan")
+        default_plan = engine.build_edge_plan(include_cloudcli=False, shadow_files=[])
+        wip_plan = engine.build_edge_plan(include_cloudcli=False, shadow_files=[], include_wip=True)
+        self.assertNotIn("patch.apply", [step["action"] for step in default_plan["steps"]])
+        self.assertIn("patch.apply", [step["action"] for step in wip_plan["steps"]])
 
 
 if __name__ == "__main__":

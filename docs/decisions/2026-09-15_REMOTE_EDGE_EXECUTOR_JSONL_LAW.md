@@ -9,10 +9,11 @@
   - `DurableJobJournal`：VPS 端任务状态与事件序列日志
   - `ReplayableBroadcast`：按 `seq` 断线重放事件
   - `TypedExecutionPlan`：结构化动作计划，禁止默认拼接任意 Shell 字符串
+- **依赖决策**：跨端状态的所有权由 [分层同步所有权与影子 CAS 律](2026-09-15_LAYERED_SYNC_OWNERSHIP_LAW.md) 定义；本 ADR 只定义如何执行和广播这些动作。
 
 ## 1. Context
 
-此前本地客户端分别通过 SSH 执行探针、Git 对齐、影子注入、补丁应用和 CloudCLI 会话查找。每一步都需要一次往返，长任务期间本地必须负责全部编排，网络断开时也无法可靠恢复。
+此前本地客户端分别通过 SSH 执行探针、Git 对齐、影子注入、补丁应用和 CloudCLI 会话查找。每一步都需要一次往返，长任务期间本地必须负责全部编排，网络断开时也无法可靠恢复。更重要的是，已追踪代码和 `.gitshadow` 私有文件曾被错误地混入同一套文件覆盖流程。
 
 VPS 端需要能够接收一组命令，在远端完成执行，并把进度异步广播回本地。CloudCLI 的 Project 和 Session 创建也应属于同一个远端任务，而不是依赖本地查询“最新会话”来猜测目标。
 
@@ -77,11 +78,13 @@ VPS 为每个任务保存：
 
 ```text
 workspace.prepare
-shadow.extract
-patch.apply
+shadow.sync
+patch.apply                 # 仅在用户显式选择 --wip 时出现
 cloudcli.session
 exec(argv=[...])
 ```
+
+`workspace.prepare` 只建立或对齐 Git 代码基线；它不是全量文件同步。`shadow.sync` 执行独立的 Manifest/CAS 原子投影，遇到远端基线变化必须发出冲突事件并让任务失败。`patch.apply` 是一次性 WIP 例外，不属于默认同步路径。
 
 默认禁止把多个命令拼成一条未校验的 Shell 字符串。`exec` 也只接收 argv 数组，并限制工作目录在远端用户主目录内；动作内部负责超时、进程组回收和失败事件。
 
@@ -91,6 +94,7 @@ exec(argv=[...])
 
 ```text
 workspace.prepare
+  → shadow.sync (CAS；冲突则停止)
   → POST /api/projects/create-project
   → POST /api/providers/sessions
   → event: session.ready

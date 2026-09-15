@@ -10,13 +10,14 @@
   - `ContinuousAutoSync` (无感常态化自动同步)
   - `ZeroOverheadHeartbeat` (零内存开销内核事件心跳)
   - `TransparentExclusionContract` (透明排除契约 · 杜绝暗箱吞文件)
+- **依赖决策**：同步对象的边界由 [分层同步所有权与影子 CAS 律](2026-09-15_LAYERED_SYNC_OWNERSHIP_LAW.md) 定义。本 ADR 只规定自动触发、租约和生命周期。
 
 ---
 
 ## 1. Context (背景与治理诉求)
 
-在跨端云端开发与 AI 协同过程中，代码与影子配置的实时同步面临两个层面的现实冲突：
-1. **离散命令的认知摩擦**：每次修改代码都需要在终端手动执行一次 `git shadow push` 或手动在远端敲 `git pull`，极易发生“本地已保存但云端跑旧代码”的脱节事故。
+在跨端云端开发与 AI 协同过程中，代码与影子配置的自动触发面临两个层面的现实冲突：
+1. **离散命令的认知摩擦**：每次修改 `.gitshadow` 文件都需要在终端手动执行一次 `git shadow push`，极易发生“本地已保存但云端跑旧配置”的脱节事故。Git 追踪代码仍必须遵循 commit/push/fetch/pull，不由 watcher 伪装成文件同步。
 2. **VPS 资源与常驻治理的焦虑**：
    - 用户顾虑：VPS（尤其 1C1G/1C2G 轻量云主机）内存极其宝贵，实时同步若常驻会不会吃光内存和 CPU？
    - 治理诉求：如果将实时同步推送到 Linux 系统的治理逻辑中（后台守护或服务），该由哪个命令触发？**能加载（Load）就必须能卸载（Unload）**。
@@ -37,7 +38,7 @@
 │  范式 B：远端独立服务治理 (Primary)   │    范式 A：前台随行会话监听 (Secondary)│
 │  Autonomous Remote Daemon        │    Ephemeral Session Watcher        │
 ├──────────────────────────────────┼─────────────────────────────────────┤
-│ 触发: git shadow service load/unload│ 触发: git shadow web <host> --watch │
+│ 触发: git shadow service load/unload│ 触发: git shadow run <host> --watch │
 │ 承载: Linux 远端后台守护 / User Service │ 承载: 本地客户端进程伴随               │
 │ 治理: 显式加载、卸载与租约自毁       │ 治理: 随终端前台会话存在，Ctrl+C 即毁  │
 │ 场景: 长期开发、Web/iPad 云端脱机操作 │ 场景: 短平快桌面编码、即开即用、零残留  │
@@ -71,7 +72,7 @@
 1. **环境探针与就绪检查**：本地探针检查远端是否存在 `inotifywait`，若缺失则优先使用极低频轻量 fallback（或自动通过原生机制监听）；
 2. **注入与启动**：通过 SSH 将监听器脚本注入并在远端后台执行（`nohup` 或 `systemd --user`）；
 3. **注册 PID 与初始租约**：生成 `<project-hash>.pid`，写入当前的 UNIX 时间戳到 `<project-hash>.lease`（默认租约 TTL = 600 秒 / 10 分钟）；
-4. **初始化对齐**：先执行一次全量公有代码与私有影子检查，确保加载起点两端绝对一致。
+4. **初始化对齐**：先执行一次 Git 代码基线对齐，再对 `.gitshadow` 执行 Manifest/CAS 检查；两者不得合并成无条件的全量文件覆盖。
 
 #### C. 卸载逻辑 (Unload / Detach Workflow)
 1. **显式信号通知**：本地发送 `git shadow service <host> unload`，通过 SSH 发送 `SIGTERM` 信号给 PID 文件中的目标进程；
@@ -104,13 +105,13 @@
 
 - **触发形态**：
   ```bash
-  git shadow web <host> --watch
-  # 或 git shadow watch <host>
+  git shadow run <host> --watch
+  # 兼容别名由 CLI 决定，但语义仍归属于 run
   ```
 - **契约行为**：
   1. 命令执行时，前台保持挂起状态并显示动态心跳状态条；
   2. 自动唤起系统默认浏览器弹出 CloudCLI Web 界面；
-  3. 本地利用 OS 原生事件驱动（Windows `ReadDirectoryChangesW`），发生文件变动后以 300ms 防抖自动增量推送；
+  3. 本地利用 OS 原生事件驱动（Windows `ReadDirectoryChangesW`），只对 `.gitshadow` 文件以 300ms 防抖提交 Shadow CAS 任务；Git 追踪文件仍通过 Git 提交和拉取；
   4. **随行退出**：当用户在终端按下 `Ctrl + C`，本地会话终止，远端没有任何遗留服务与进程，天然零残留。
 
 ---
@@ -127,5 +128,5 @@
 1. **确定性掌控**：用户拥有完整的命令控制权——`service load` 让云端自主常驻，`service unload` 随手注销，随时 `service status` 检查；
 2. **彻底解决内存焦虑**：通过 10 分钟心跳租约（`LeaseBasedAutoTeardown`），即使断网断电，VPS 也能在 10 分钟内自动卸载守护进程并释放内存，杜绝一切僵尸进程；
 3. **双模自由切换**：
-   - 喜欢随开随走的用户用 `web <host> --watch`（范式 A）；
+   - 喜欢随开随走的用户用 `run <host> --watch`（范式 A）；
    - 需要长时间脱机自主运行的用户用 `service load`（范式 B）。

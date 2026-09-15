@@ -12,6 +12,8 @@ import argparse
 import base64
 import datetime as _datetime
 import errno
+import fcntl
+import hashlib
 import json
 import os
 import pathlib
@@ -335,7 +337,9 @@ class EdgeExecutor:
             if not target.exists():
                 run_checked(["git", "clone", "--", remote_url, str(target)], timeout=1800)
             elif not (target / ".git").exists():
-                raise EdgeError("target exists but is not a Git repository: %s" % target)
+                if any(target.iterdir()):
+                    raise EdgeError("target exists but is not an empty Git workspace: %s" % target)
+                run_checked(["git", "clone", "--", remote_url, str(target)], timeout=1800)
             run_checked(["git", "fetch", "origin"], cwd=target, timeout=900)
             run_checked(["git", "checkout", branch], cwd=target, timeout=900)
             if pull:
@@ -363,6 +367,155 @@ class EdgeExecutor:
         if not patch_b64:
             return
         run_checked(["git", "apply", "-"], cwd=cwd, input_data=base64.b64decode(str(patch_b64)), timeout=900)
+
+    @staticmethod
+    def _file_hash(path: pathlib.Path) -> Optional[str]:
+        if not path.exists():
+            return None
+        if not path.is_file():
+            raise EdgeError("shadow target is not a regular file: %s" % path)
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _shadow_manifest_path(self, target: pathlib.Path) -> pathlib.Path:
+        digest = hashlib.sha256(str(target).encode("utf-8")).hexdigest()[:32]
+        return self.state_root / "shadows" / (digest + ".json")
+
+    def _load_shadow_manifest(self, target: pathlib.Path) -> Dict[str, Any]:
+        path = self._shadow_manifest_path(target)
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            value = {}
+        files = value.get("files") if isinstance(value, dict) else None
+        return {"version": 1, "target": str(target), "files": files if isinstance(files, dict) else {}}
+
+    def _save_shadow_manifest(self, target: pathlib.Path, manifest: Dict[str, Any]) -> None:
+        path = self._shadow_manifest_path(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json_dump(manifest) + "\n", encoding="utf-8")
+        os.replace(str(temporary), str(path))
+
+    def _shadow_relative_path(self, target: pathlib.Path, value: Any) -> Tuple[str, pathlib.Path]:
+        relative = str(value or "")
+        candidate = pathlib.PurePosixPath(relative)
+        if not relative or candidate.is_absolute() or ".." in candidate.parts:
+            raise EdgeError("shadow entry has an unsafe relative path")
+        destination = (target / pathlib.Path(*candidate.parts)).resolve(strict=False)
+        try:
+            destination.relative_to(target.resolve())
+        except ValueError as exc:
+            raise EdgeError("shadow entry escapes its target") from exc
+        return "/".join(candidate.parts), destination
+
+    @staticmethod
+    def _atomic_write(path: pathlib.Path, payload: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(".%s.git-shadow-%s.tmp" % (path.name, os.getpid()))
+        try:
+            with temporary.open("wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(str(temporary), str(path))
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _shadow_sync_unlocked(self, job_id: str, step: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply .gitshadow entries with compare-and-swap conflict protection."""
+        target = ensure_inside(str(step.get("target") or ""), self.home)
+        entries = step.get("entries")
+        if not isinstance(entries, list):
+            raise EdgeError("shadow.sync requires an entries array")
+        target.mkdir(parents=True, exist_ok=True)
+        manifest = self._load_shadow_manifest(target)
+        applied = 0
+        conflicts: List[str] = []
+
+        for raw_entry in entries:
+            if not isinstance(raw_entry, dict):
+                raise EdgeError("shadow entry must be an object")
+            relative, destination = self._shadow_relative_path(target, raw_entry.get("path"))
+            base_hash = raw_entry.get("base_hash") or None
+            local_hash = str(raw_entry.get("local_hash") or "")
+            deleted = bool(raw_entry.get("deleted"))
+            payload = b""
+            if not deleted:
+                encoded = raw_entry.get("content_b64")
+                if not isinstance(encoded, str):
+                    raise EdgeError("shadow entry requires content_b64")
+                try:
+                    payload = base64.b64decode(encoded, validate=True)
+                except (ValueError, TypeError) as exc:
+                    raise EdgeError("shadow entry contains invalid base64") from exc
+                if hashlib.sha256(payload).hexdigest() != local_hash:
+                    raise EdgeError("shadow entry hash does not match content: %s" % relative)
+
+            remote_hash = self._file_hash(destination)
+            if remote_hash == local_hash and not deleted:
+                manifest["files"][relative] = {"synced_hash": local_hash, "updated_at": now_iso()}
+                self.emit_event(job_id, "shadow.applied", path=relative, local_hash=local_hash, idempotent=True)
+                applied += 1
+                continue
+            if deleted and remote_hash is None:
+                manifest["files"][relative] = {"synced_hash": None, "updated_at": now_iso()}
+                self.emit_event(job_id, "shadow.applied", path=relative, local_hash="", deleted=True, idempotent=True)
+                applied += 1
+                continue
+
+            if remote_hash != base_hash:
+                target_key = hashlib.sha256(str(target).encode("utf-8")).hexdigest()[:32]
+                conflict_path = self.state_root / "conflicts" / target_key / safe_job_id(job_id) / pathlib.Path(*relative.split("/"))
+                if not deleted:
+                    self._atomic_write(conflict_path, payload)
+                else:
+                    self._atomic_write(conflict_path, b"git-shadow deletion conflict\n")
+                conflicts.append(relative)
+                self.emit_event(
+                    job_id,
+                    "shadow.conflict",
+                    path=relative,
+                    base_hash=base_hash,
+                    local_hash=local_hash,
+                    remote_hash=remote_hash,
+                    conflict_path=str(conflict_path),
+                )
+                continue
+
+            if deleted:
+                try:
+                    destination.unlink()
+                except FileNotFoundError:
+                    pass
+            else:
+                self._atomic_write(destination, payload)
+            manifest["files"][relative] = {"synced_hash": None if deleted else local_hash, "updated_at": now_iso()}
+            self.emit_event(job_id, "shadow.applied", path=relative, local_hash=local_hash, deleted=deleted)
+            applied += 1
+
+        self._save_shadow_manifest(target, manifest)
+        if conflicts:
+            raise EdgeError("shadow CAS conflict: %s" % ", ".join(conflicts))
+        return {"applied": applied, "conflicts": 0}
+
+    def _shadow_sync(self, job_id: str, step: Dict[str, Any]) -> Dict[str, Any]:
+        """Serialize concurrent jobs targeting the same shadow workspace."""
+        target = ensure_inside(str(step.get("target") or ""), self.home)
+        lock_path = self._shadow_manifest_path(target).with_suffix(".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as lock_stream:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+            try:
+                return self._shadow_sync_unlocked(job_id, step)
+            finally:
+                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
 
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -435,12 +588,8 @@ class EdgeExecutor:
         if action == "workspace.prepare":
             self._workspace_prepare(step)
             return {}
-        if action == "shadow.extract":
-            target = ensure_inside(str(step.get("target") or ""), self.home)
-            payload = step.get("archive_b64")
-            if payload:
-                self._safe_extract(base64.b64decode(str(payload)), target)
-            return {}
+        if action == "shadow.sync":
+            return self._shadow_sync(job_id, step)
         if action == "patch.apply":
             self._apply_patch(step)
             return {}

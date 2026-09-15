@@ -7,8 +7,10 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 
 `git-shadow` 是一款面向现代云端开发与 AI 编程智能体的跨端极速流式投影工具。它遵循**三态隔离公理**：
 1. **公有代码走 Git**（远端骨干网直接 clone/fetch 或本地 P2P 流式推送）；
-2. **私有配置走影子**（受 `.gitignore` 与 `.gitshadow` 保护的敏感文件毫秒级内存流式覆盖）；
+2. **私有配置走影子**（受 `.gitignore` 与 `.gitshadow` 保护的敏感文件通过 Manifest/CAS 原子投影，禁止静默覆盖另一端修改）；
 3. **重型依赖走原生**（远端 Linux 宿主原生安装，绝不跨平台对拷）。
+
+分层同步的硬边界：Git 追踪文件只交给 Git；`.gitshadow` 文件只交给 Shadow Manifest/CAS；未提交追踪文件默认不同步，只有显式 `--wip` 才作为一次性补丁投影。
 
 ---
 
@@ -54,7 +56,8 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 - 长任务不得由本地逐条等待 SSH 返回；本地将结构化 `TypedExecutionPlan` 一次提交给 VPS 边缘执行器。
 - 传输使用同一条干净 SSH 通道上的双向 JSONL：提交同步返回 `accepted + job_id`，执行过程异步广播 `step.started`、`output`、`session.ready`、`job.completed` 或 `job.failed`。
 - VPS 为每个 Job 持久化脱敏的 `request.json`、`state.json` 和带单调 `seq` 的 `events.ndjson`；本地断线后必须使用 `resume + after_seq` 重放，不得重新猜测最新会话。
-- 默认只允许结构化动作（`workspace.prepare`、`shadow.extract`、`patch.apply`、`cloudcli.session` 和 argv 数组形式的 `exec`），禁止无校验的 Shell 命令串拼接。
+- 默认只允许结构化动作（`workspace.prepare`、`shadow.sync`、`cloudcli.session` 和 argv 数组形式的 `exec`），禁止无校验的 Shell 命令串拼接；`patch.apply` 仅在用户显式传入 `--wip` 时出现。
+- `workspace.prepare` 只对齐 Git 代码基线；`shadow.sync` 携带 `base_hash/local_hash` 并由 VPS 执行 CAS，收到 `shadow.conflict` 时不得继续创建会话。
 - CloudCLI 会话必须由同一个远端 Job 明确创建，收到 `session.ready` 后才打开 `/session/<id>`；禁止直接扫描 SQLite 选择“最新会话”。
 - CloudCLI provider 必须在 Session 创建前确定；命令行使用 `--provider`，交互模式使用本地菜单。当前数据库 provider 非空，不创建 provider-neutral 临时 Session。
 - 短任务完成即退出；长期服务继续遵循 600 秒 Lease 心跳和超时自毁契约。
@@ -82,7 +85,7 @@ git shadow probe aws
 git shadow auth sync aws
 
 # 3. 投影并自动弹开浏览器
-git shadow web aws
+git shadow run aws cloudcli --provider codex
 # -> 浏览器将自动打开 https://cli.daduiot.com，进入对应工作区
 ```
 
@@ -103,12 +106,15 @@ git shadow service aws unload
 # 首次使用：上传独立的 VPS 边缘执行器
 git shadow edge install aws
 
-# 一次提交工作区、影子、补丁和 CloudCLI 会话任务
+# 一次提交 Git 基线、Shadow CAS 和 CloudCLI 会话任务
 git shadow run aws cloudcli --provider codex
 
 # 断线后查看或重放任务事件
 git shadow edge status aws <job-id>
 git shadow edge resume aws <job-id>
+
+# 如确实需要把未提交追踪代码临时交给远端 Agent，必须显式开启
+git shadow run aws cloudcli --provider codex --wip
 ```
 
 VPS 上的 CloudCLI 内部地址默认是 `http://127.0.0.1:3001`，可通过 `--cloudcli-url` 或 `GIT_SHADOW_CLOUDCLI_BASE_URL` 覆盖。需要鉴权时只在 VPS 环境设置 `GIT_SHADOW_CLOUDCLI_TOKEN` / `GIT_SHADOW_CLOUDCLI_API_KEY`，绝不把凭证放进任务事件或日志。

@@ -1,12 +1,10 @@
 """
 git_shadow.engine
-远程工作区编排与影子叠加引擎：SSH 管道、Git 对齐、流式 tar 影子注入、补丁应用、Web/终端 AI 唤起
+远程工作区编排与分层同步引擎：Git 代码基线、.gitshadow CAS 投影、Web/终端 AI 唤起
 """
 
 import os
-import io
 import re
-import tarfile
 import subprocess
 import webbrowser
 import base64
@@ -14,13 +12,13 @@ from typing import List, Optional, Dict, Any
 
 
 from .scanner import RepoState
+from .shadow_sync import ShadowManifestStore
 from .utils import (
     log_info,
     log_success,
     log_warn,
     log_error,
     log_step,
-    format_size,
     Colors
 )
 
@@ -30,7 +28,7 @@ class ShadowEngine:
         repo: RepoState,
         remote_host: str,
         remote_dir: Optional[str] = None,
-        with_wip: bool = True
+        with_wip: bool = False
     ):
         self.repo = repo
         self.remote_host = remote_host
@@ -183,23 +181,16 @@ class ShadowEngine:
         log_success(f"远端工作区初始化就位: {Colors.CYAN}{target_dir}{Colors.RESET}")
         return True
 
-    def pack_shadow_files(self, shadow_files: List[str]) -> bytes:
-        """在内存中打包影子文件列表为 tar.gz 二进制流"""
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            for rel_path in shadow_files:
-                full_path = os.path.join(self.repo.root_dir, rel_path)
-                if os.path.isfile(full_path):
-                    tar.add(full_path, arcname=rel_path)
-        return buf.getvalue()
-
     def build_edge_plan(
         self,
-        provider: str,
+        provider: Optional[str] = None,
         shadow_files: Optional[List[str]] = None,
         sync_git_pull: bool = False,
         public_url: str = "https://cli.daduiot.com",
         cloudcli_base_url: Optional[str] = None,
+        include_wip: bool = False,
+        include_cloudcli: bool = True,
+        shadow_store: Optional[ShadowManifestStore] = None,
     ) -> Dict[str, Any]:
         """Build one serializable plan for the VPS edge executor.
 
@@ -232,16 +223,19 @@ class ShadowEngine:
         steps.append(workspace_step)
 
         if shadow_files:
+            manifest = shadow_store or ShadowManifestStore(self.repo.root_dir)
             steps.append(
                 {
-                    "id": "shadow.extract",
-                    "action": "shadow.extract",
+                    "id": "shadow.sync",
+                    "action": "shadow.sync",
                     "target": target_dir,
-                    "archive_b64": base64.b64encode(self.pack_shadow_files(shadow_files)).decode("ascii"),
+                    "entries": manifest.build_entries(shadow_files),
                 }
             )
 
-        if self.with_wip and self.repo.is_dirty:
+        # A tracked-file patch is deliberately opt-in.  The normal code lane
+        # is Git commit/fetch/pull; this step exists only for explicit WIP use.
+        if include_wip and self.repo.is_dirty:
             patch_content = self.repo.capture_wip_patch()
             if patch_content:
                 steps.append(
@@ -253,84 +247,22 @@ class ShadowEngine:
                     }
                 )
 
-        steps.append(
-            {
-                "id": "cloudcli.session",
-                "action": "cloudcli.session",
-                "project_path": target_dir,
-                "provider": provider,
-                "public_url": public_url.rstrip("/"),
-                "initial_message": "",
-            }
-        )
-        if cloudcli_base_url:
-            steps[-1]["base_url"] = cloudcli_base_url.rstrip("/")
+        if include_cloudcli:
+            if not provider:
+                raise ValueError("CloudCLI plan requires a provider")
+            steps.append(
+                {
+                    "id": "cloudcli.session",
+                    "action": "cloudcli.session",
+                    "project_path": target_dir,
+                    "provider": provider,
+                    "public_url": public_url.rstrip("/"),
+                    "initial_message": "",
+                }
+            )
+            if cloudcli_base_url:
+                steps[-1]["base_url"] = cloudcli_base_url.rstrip("/")
         return {"protocol": 1, "project_path": target_dir, "provider": provider, "steps": steps}
-
-    def inject_shadow_files(self, shadow_files: List[str]) -> bool:
-        """流式注入影子文件到远端"""
-        log_step(2, 4, f"叠加本地影子文件 (共 {len(shadow_files)} 个)...")
-
-        if not shadow_files:
-            log_info("没有需要叠加的影子文件，跳过传输。")
-            return True
-
-        for f in shadow_files:
-            size = os.path.getsize(os.path.join(self.repo.root_dir, f))
-            print(f"  {Colors.DIM}• {f} ({format_size(size)}){Colors.RESET}", flush=True)
-
-        tar_data = self.pack_shadow_files(shadow_files)
-        log_info(f"影子压缩包体积: {format_size(len(tar_data))} (毫秒级传输)")
-
-        if len(tar_data) < 5000:
-            b64_data = base64.b64encode(tar_data).decode("ascii")
-            remote_cmd = f"echo '{b64_data}' | base64 -d | tar -xzf - -C {self.remote_dir}"
-            proc = self._run_ssh(remote_cmd, check=False)
-        else:
-            remote_cmd = f"tar -xzf - -C {self.remote_dir}"
-            proc = self._run_ssh(remote_cmd, input_data=tar_data, check=False)
-
-        if proc.returncode != 0:
-            log_error(f"影子文件解压失败: {proc.stderr}")
-            return False
-
-        log_success("影子文件已成功覆盖叠加至远端工作区！")
-        return True
-
-    def apply_wip_patch(self) -> bool:
-        """流式应用本地未提交修改 (WIP Patch)"""
-        log_step(3, 4, "检查本地未提交代码差异 (WIP Patch)...")
-
-        if not self.with_wip:
-            log_info("已通过 --no-wip 显式跳过代码补丁应用。")
-            return True
-
-        if not self.repo.is_dirty:
-            log_success("本地工作区状态干净 (Clean)，无需打补丁。")
-            return True
-
-        patch_content = self.repo.capture_wip_patch()
-        if not patch_content:
-            log_success("未检测到本地代码改动，无需打补丁。")
-            return True
-
-        log_info(f"检测到本地工作区有未提交代码，正在向远端打补丁 ({len(patch_content.splitlines())} 行差异)...")
-
-        raw_bytes = patch_content.encode("utf-8")
-        if len(raw_bytes) < 5000:
-            b64_patch = base64.b64encode(raw_bytes).decode("ascii")
-            remote_cmd = f"cd {self.remote_dir} && echo '{b64_patch}' | base64 -d | git apply - 2>/dev/null || true"
-            proc = self._run_ssh(remote_cmd, check=False)
-        else:
-            remote_cmd = f"cd {self.remote_dir} && git apply - 2>/dev/null || true"
-            proc = self._run_ssh(remote_cmd, input_data=raw_bytes, check=False)
-
-        if proc.returncode != 0:
-            log_warn("补丁应用可能存在部分冲突，远端将保留当前最佳对齐状态。")
-        else:
-            log_success("本地未提交的代码差异已在远端无缝生效！")
-
-        return True
 
     def open_cloudcli_optimistic(self, domain: str = "cli.daduiot.com") -> str:
         """乐观先行：0秒立即拉起本地浏览器打开 CloudCLI，绝不让用户在终端黑框中空转干等"""
