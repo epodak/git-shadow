@@ -140,6 +140,14 @@ cd /path/to/empty-folder
 git shadow run aws-micro cloudcli --provider codex
 ```
 
+For the Git code lane, `origin` is passed through unchanged and must use an
+HTTPS URL or an SSH URL/scp-style address (for example,
+`https://github.com/org/repo.git` or `git@github.com:org/repo.git`). Public HTTPS
+repositories need no remote credential setup; private repositories should use
+`git shadow auth sync <host>` before projection. A folder with no `origin`
+uses the explicit local P2P archive lane instead of silently guessing a GitHub
+repository.
+
 #### 🌐 Batch the remote projection through the VPS edge executor
 
 For CloudCLI, `git-shadow` uploads a standalone VPS executor, submits one

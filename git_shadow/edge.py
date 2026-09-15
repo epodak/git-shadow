@@ -51,6 +51,7 @@ class EdgeClient:
         self.remote_host = remote_host
         self.python_executable = python_executable
         self._write_lock = threading.Lock()
+        self.last_install_error = ""
 
     @staticmethod
     def new_job_id() -> str:
@@ -73,6 +74,7 @@ class EdgeClient:
 
     def ensure_installed(self) -> bool:
         """Upload the standalone executor when the VPS copy differs."""
+        self.last_install_error = ""
         source_path = pathlib.Path(__file__).with_name("edge_agent.py")
         local_digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
         check = self._run_ssh(
@@ -81,6 +83,9 @@ class EdgeClient:
         remote_digest = output_text(check.stdout).strip()
         if remote_digest == local_digest:
             return True
+        if check.returncode != 0:
+            detail = output_text(check.stderr).strip() or "ssh exit code %s" % check.returncode
+            log_warn("VPS 边缘执行器探测失败，将尝试重新安装: %s" % detail[-1000:])
 
         payload = base64.b64encode(source_path.read_bytes())
         # Tilde expansion must happen in a shell, so keep the destination path
@@ -92,8 +97,24 @@ class EdgeClient:
         )
         uploaded = self._run_ssh(command, input_data=payload)
         if uploaded.returncode != 0:
-            message = output_text(uploaded.stderr).strip()
-            log_warn("VPS 边缘执行器安装失败: %s" % (message or "SSH transfer failed"))
+            message = output_text(uploaded.stderr).strip() or "SSH transfer failed"
+            self.last_install_error = "upload failed: %s" % message[-1000:]
+            log_warn(
+                "VPS 边缘执行器安装失败: %s；可重试 `git shadow edge install %s`，"
+                "并检查 SSH 写入权限。" % (message[-1000:], self.remote_host)
+            )
+            return False
+        verify = self._run_ssh(
+            "sha256sum %s 2>/dev/null | awk '{print $1}'" % self.remote_agent_path
+        )
+        verified_digest = output_text(verify.stdout).strip()
+        if verify.returncode != 0 or verified_digest != local_digest:
+            detail = output_text(verify.stderr).strip() or "remote checksum mismatch"
+            self.last_install_error = "verification failed: %s" % detail[-1000:]
+            log_warn(
+                "VPS 边缘执行器安装后校验失败: %s；请重试安装并确认远端磁盘可写。"
+                % detail[-1000:]
+            )
             return False
         log_success("VPS 边缘执行器已就绪")
         return True

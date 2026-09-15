@@ -50,7 +50,7 @@ Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Wind
 
 - [x] 提供可靠的 `git-shadow`/`git shadow` wrapper 安装方式
 - [x] 明确控制端和 VPS 端的 Python 依赖边界
-- [ ] `edge install` 失败时给出可恢复诊断
+- [x] `edge install` 失败时给出可恢复诊断
 - [x] 不依赖 `pip` 的 VPS 边缘执行器验收（standalone agent 协议测试）
 
 ### 1.2 CloudCLI 编排
@@ -63,7 +63,7 @@ Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Wind
 
 ### 1.3 Git 工作区
 
-- [ ] 公有仓库 HTTPS/SSH URL 的明确策略
+- [x] 公有仓库 HTTPS/SSH URL 的明确策略
 - [x] 空目录、CloudCLI 预先写入文件、已有 Git 工作区核心路径测试
 - [x] Git 可选的普通文件夹可创建 CloudCLI Session、远端空工作区和 Shadow lane
 - [x] branch 不存在、已有脏工作区的安全失败语义；非快进由 Git 原生 pull 明确失败

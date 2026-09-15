@@ -30,6 +30,37 @@ class TestEdgeProtocol(unittest.TestCase):
         self.assertEqual(args[:7], ["ssh", "-o", "RemoteCommand=none", "-o", "RequestTTY=no", "-o", "StrictHostKeyChecking=accept-new"])
         self.assertEqual(args[-2:], ["vps", "agent --rpc"])
 
+    def test_edge_install_failure_exposes_recoverable_diagnostic(self):
+        class FailingInstallClient(EdgeClient):
+            def _run_ssh(self, remote_command, input_data=None):
+                if input_data is not None:
+                    return SimpleNamespace(returncode=1, stdout=b"", stderr=b"permission denied")
+                return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        client = FailingInstallClient("vps")
+        self.assertFalse(client.ensure_installed())
+        self.assertIn("permission denied", client.last_install_error)
+
+    def test_edge_install_verifies_uploaded_checksum(self):
+        source = pathlib.Path(__file__).resolve().parents[1] / "git_shadow" / "edge_agent.py"
+        digest = hashlib.sha256(source.read_bytes()).hexdigest().encode("ascii")
+
+        class SuccessfulInstallClient(EdgeClient):
+            def __init__(self):
+                super().__init__("vps")
+                self.calls = 0
+
+            def _run_ssh(self, remote_command, input_data=None):
+                self.calls += 1
+                if input_data is not None:
+                    return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+                checksum = b"" if self.calls == 1 else digest
+                return SimpleNamespace(returncode=0, stdout=checksum, stderr=b"")
+
+        client = SuccessfulInstallClient()
+        self.assertTrue(client.ensure_installed())
+        self.assertEqual(client.calls, 3)
+
     def test_standalone_agent_executes_plan_and_replays_events(self):
         agent_path = pathlib.Path(__file__).resolve().parents[1] / "git_shadow" / "edge_agent.py"
         job_id = "job-test-protocol"
