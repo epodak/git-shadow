@@ -51,6 +51,46 @@ class TestWorkspacePrepare(unittest.TestCase):
             executor._stop.set()
             executor._lease_thread.join(timeout=2)
 
+    def test_existing_dirty_workspace_is_not_reset_by_prepare(self):
+        subprocess.run(["git", "clone", "--branch", "main", str(self.origin), str(self.target)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        dirty_file = self.target / "README.md"
+        dirty_file.write_text("local-dirty\n", encoding="utf-8")
+        executor = EdgeExecutor(str(self.root / "dirty-state"))
+        try:
+            executor._execute_step(
+                "job-dirty-workspace",
+                {
+                    "action": "workspace.prepare",
+                    "target": str(self.target),
+                    "remote_url": str(self.origin),
+                    "branch": "main",
+                },
+            )
+            self.assertEqual(dirty_file.read_text(encoding="utf-8"), "local-dirty\n")
+        finally:
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
+
+    def test_missing_branch_fails_without_resetting_existing_workspace(self):
+        subprocess.run(["git", "clone", "--branch", "main", str(self.origin), str(self.target)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        before = (self.target / "README.md").read_text(encoding="utf-8")
+        executor = EdgeExecutor(str(self.root / "missing-branch-state"))
+        try:
+            with self.assertRaises(Exception):
+                executor._execute_step(
+                    "job-missing-branch",
+                    {
+                        "action": "workspace.prepare",
+                        "target": str(self.target),
+                        "remote_url": str(self.origin),
+                        "branch": "does-not-exist",
+                    },
+                )
+            self.assertEqual((self.target / "README.md").read_text(encoding="utf-8"), before)
+        finally:
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
+
 
 if __name__ == "__main__":
     unittest.main()

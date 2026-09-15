@@ -35,7 +35,7 @@
 
 - [ ] 公有仓库 HTTPS/SSH URL 的明确策略
 - [x] 空目录、CloudCLI 预先写入文件、已有 Git 工作区核心路径测试
-- [ ] branch 不存在、非快进、脏工作区的安全失败语义
+- [x] branch 不存在、已有脏工作区的安全失败语义；非快进由 Git 原生 pull 明确失败
 
 ## 2. P0：VPS 常驻服务治理
 
@@ -66,7 +66,7 @@
 - [ ] 区分 replay、retry、resume 三种语义
 - [ ] 失败步骤可幂等重试
 - [x] 常驻 service SSH 断线后自动重连并按 seq 去重/补齐事件
-- [ ] CloudCLI Session 已创建但后续失败时广播明确的 partial state
+- [x] CloudCLI Session 已创建但后续失败时广播明确的 partial state
 - [x] 常驻 service 的重复提交、断线重连和幂等 job_id 测试
 - [ ] 任务日志大小上限和清理策略
 
@@ -74,7 +74,7 @@
 
 - [x] Linux inotify 监听器
 - [ ] macOS FSEvents、Windows ReadDirectoryChangesW 监听器
-- [ ] 轮询作为兼容 fallback
+- [x] 轮询作为兼容 fallback
 - [ ] watcher 防抖、合并提交和失败退避
 - [ ] 安静模式与可读进度模式
 - [ ] 端到端首次启动耗时和重复启动耗时指标
