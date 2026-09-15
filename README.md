@@ -202,6 +202,14 @@ git shadow service aws-micro unload
 `.gitshadow` 变化并触发双向 CAS 的控制端。服务端不会把本地磁盘变化猜成同步请求。
 常驻服务连接中断时，控制端会用同一 `job_id` 重连并按事件序号去重，不会重复执行同一任务。
 
+新 VPS 只配置 SSH 时，可先运行仓库内的一键验收脚本。它安装 standalone edge、加载并检查
+项目级 service，默认再执行一次分层 `push`，退出时自动卸载本次 service；使用 `--no-push`
+可只验收安装与启动，使用 `--keep-service` 可保留 service：
+
+```bash
+scripts/acceptance_vps.sh user@vps --dest /home/user/wkspace/project
+```
+
 边缘执行器默认将每个 Job 的事件日志限制为 4 MiB，并只保留最近 100 个终态
 Job 的运行目录；运行中任务不会被清理。可在 VPS 环境中通过
 `GIT_SHADOW_EVENT_LOG_MAX_BYTES` 和 `GIT_SHADOW_MAX_COMPLETED_RUNS` 调整默认值，

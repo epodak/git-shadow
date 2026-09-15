@@ -121,7 +121,7 @@ Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Wind
 
 ## 7. P2：交付验收
 
-- [ ] 新 VPS 仅有 SSH 登录时的一键验收脚本
+- [x] 新 VPS 仅有 SSH 登录时的一键验收脚本（`scripts/acceptance_vps.sh`）
 - [x] 公有 GitHub 仓库完整流程（真实 VPS 临时分支 clone、远端 commit/push、本地 watcher ff-only 收割）
 - [ ] 私有 GitHub 仓库完整流程
 - [x] CloudCLI Codex Session 完整流程（真实 VPS CloudCLI 受保护 API 与准确 Session 深链）
