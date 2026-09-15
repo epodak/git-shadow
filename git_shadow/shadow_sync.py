@@ -115,6 +115,8 @@ class ShadowManifestStore:
 
     def consume_event(self, event: Dict[str, Any]) -> None:
         """Advance local acknowledgement state only after remote CAS success."""
+        if event.get("replay_redacted"):
+            return
         event_type = event.get("event")
         if event_type == "shadow.applied":
             self._consume_applied(event)

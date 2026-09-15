@@ -105,6 +105,8 @@ class TestShadowPull(unittest.TestCase):
         saved = json.loads(journal.events_path.read_text(encoding="utf-8").strip())
         self.assertEqual(wire_event["content_b64"], content)
         self.assertEqual(saved["content_b64"], "<redacted>")
+        replayed = list(journal.replay(0))[0]
+        self.assertTrue(replayed["replay_redacted"])
 
     def test_push_encodes_delete_empty_file_and_rename_as_cas_entries(self):
         base = b"BASE\n"

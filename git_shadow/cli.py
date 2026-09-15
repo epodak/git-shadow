@@ -152,7 +152,10 @@ def print_edge_event(event: dict) -> None:
     elif event.get("event") == "shadow.conflict":
         log_error("影子文件 CAS 冲突: %s（远端未覆盖，已保存冲突副本 %s）" % (event.get("path", ""), event.get("conflict_path", "")))
     elif event.get("event") == "shadow.remote":
-        log_info("已接收远端 Shadow 变化: %s" % event.get("path", ""))
+        if event.get("replay_redacted"):
+            log_warn("远端 Shadow 变化来自脱敏重放，将重新发起 pull 获取 live 内容: %s" % event.get("path", ""))
+        else:
+            log_info("已接收远端 Shadow 变化: %s" % event.get("path", ""))
     elif event.get("type") == "error":
         log_error("VPS 执行器错误: %s" % event.get("error", "unknown error"))
 
@@ -395,7 +398,7 @@ def main(args: Optional[List[str]] = None):
 
         return edge_client.submit(plan, on_event=on_event), plan
 
-    def submit_shadow_pull():
+    def submit_shadow_pull(refresh_attempt: bool = False):
         edge_client = get_executor_client()
         plan = engine.build_shadow_pull_plan(
             shadow_files=repo.scan_shadow_files(),
@@ -403,11 +406,19 @@ def main(args: Optional[List[str]] = None):
         )
         plan["job_id"] = edge_client.new_job_id()
 
+        replay_redacted = {"value": False}
+
         def on_event(event: dict) -> None:
             print_edge_event(event)
+            if event.get("event") == "shadow.remote" and event.get("replay_redacted"):
+                replay_redacted["value"] = True
             shadow_store.consume_event(event)
 
-        return edge_client.submit(plan, on_event=on_event), plan
+        result = edge_client.submit(plan, on_event=on_event)
+        if replay_redacted["value"] and not refresh_attempt:
+            log_info("正在通过新的 live Shadow pull 补齐脱敏重放内容...")
+            return submit_shadow_pull(refresh_attempt=True)
+        return result, plan
 
     def shadow_snapshot():
         snapshot = {}

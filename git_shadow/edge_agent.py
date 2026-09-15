@@ -195,6 +195,8 @@ class EventJournal:
                 except json.JSONDecodeError:
                     continue
                 if int(payload.get("seq", 0)) > after_seq:
+                    if payload.get("content_b64") == "<redacted>":
+                        payload["replay_redacted"] = True
                     payload["replay"] = True
                     output.append(payload)
         return output
