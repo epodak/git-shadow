@@ -141,7 +141,10 @@ def print_edge_event(event: dict) -> None:
     elif event.get("event") == "job.completed":
         log_success("VPS 任务执行完成")
     elif event.get("event") == "job.failed":
-        log_error("VPS 任务失败: %s" % event.get("error", "unknown error"))
+        suffix = "（CloudCLI Session 已创建，任务处于 partial 状态）" if event.get("partial") else ""
+        log_error("VPS 任务失败: %s%s" % (event.get("error", "unknown error"), suffix))
+    elif event.get("event") == "job.partial":
+        log_warn("任务进入 partial 状态：CloudCLI Session 已创建，但后续步骤失败；Session=%s" % event.get("session", {}).get("session_id", ""))
     elif event.get("event") == "shadow.conflict":
         log_error("影子文件 CAS 冲突: %s（远端未覆盖，已保存冲突副本 %s）" % (event.get("path", ""), event.get("conflict_path", "")))
     elif event.get("event") == "shadow.remote":

@@ -26,10 +26,10 @@
 
 ### 1.2 CloudCLI 编排
 
-- [ ] 对 CloudCLI Project/Session API 建立可替换 HTTP 测试服务器
-- [ ] 验证 `session.ready` 早于 Git clone 完成
-- [ ] clone 失败、Session 创建失败、重复任务的状态治理
-- [ ] provider、project path、公开深链的契约校验
+- [x] 对 CloudCLI Project/Session API 建立可替换 HTTP 测试服务器
+- [x] 验证 `session.ready` 早于 Git clone 完成
+- [x] clone/后续步骤失败时广播 partial 状态；Session 创建失败保持明确失败
+- [x] provider、project path、公开深链的契约校验
 
 ### 1.3 Git 工作区
 

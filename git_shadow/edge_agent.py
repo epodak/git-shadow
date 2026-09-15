@@ -27,6 +27,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import quote, urlsplit
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
@@ -634,17 +635,26 @@ class EdgeExecutor:
             or "http://127.0.0.1:3001"
         ).rstrip("/")
         public_url = str(step.get("public_url") or base_url).rstrip("/")
-        project_path = str(step.get("project_path") or "")
+        project_path_value = str(step.get("project_path") or "")
         provider = str(step.get("provider") or "").strip()
-        if not project_path or not provider:
+        project_path = ensure_inside(project_path_value, self.home) if project_path_value else None
+        if project_path is None or not provider:
             raise EdgeError("CloudCLI session requires project_path and provider")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", provider):
+            raise EdgeError("CloudCLI provider is invalid")
 
-        self._http_json(base_url + "/api/projects/create-project", {"path": project_path})
+        for name, value in (("base_url", base_url), ("public_url", public_url)):
+            parsed = urlsplit(value)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.password:
+                raise EdgeError("CloudCLI %s must be an absolute HTTP(S) URL" % name)
+        project_path_text = str(project_path)
+
+        self._http_json(base_url + "/api/projects/create-project", {"path": project_path_text})
         session_response = self._http_json(
             base_url + "/api/providers/sessions",
             {
                 "provider": provider,
-                "projectPath": project_path,
+                "projectPath": project_path_text,
                 "initialMessage": str(step.get("initial_message") or ""),
             },
         )
@@ -653,9 +663,12 @@ class EdgeExecutor:
             session_id = session_response["data"].get("sessionId")
         if not session_id:
             raise EdgeError("CloudCLI API did not return sessionId")
-        url = public_url + "/session/" + str(session_id)
-        self.emit_event(job_id, "session.ready", session_id=str(session_id), provider=provider, project_path=project_path, url=url)
-        return {"session_id": str(session_id), "url": url, "provider": provider, "project_path": project_path}
+        session_id_text = str(session_id).strip()
+        if not session_id_text or len(session_id_text) > 256:
+            raise EdgeError("CloudCLI API returned an invalid sessionId")
+        url = public_url + "/session/" + quote(session_id_text, safe="")
+        self.emit_event(job_id, "session.ready", session_id=session_id_text, provider=provider, project_path=project_path_text, url=url)
+        return {"session_id": session_id_text, "url": url, "provider": provider, "project_path": project_path_text}
 
     def _execute_step(self, job_id: str, step: Dict[str, Any]) -> Dict[str, Any]:
         action = str(step.get("action") or "")
@@ -700,6 +713,12 @@ class EdgeExecutor:
                 step_id = str(step.get("id") or "step-%s" % index)
                 self.emit_event(job_id, "step.started", step=step_id, action=step.get("action"), index=index)
                 result = self._execute_step(job_id, step)
+                if step.get("action") == "cloudcli.session" and isinstance(result, dict):
+                    record["session"] = {
+                        key: result[key]
+                        for key in ("session_id", "url", "provider", "project_path")
+                        if key in result
+                    }
                 self.emit_event(job_id, "step.succeeded", step=step_id, result=result)
             self._state(job_id, "completed")
             record["status"] = "completed"
@@ -710,13 +729,18 @@ class EdgeExecutor:
             self.emit_event(job_id, "job.completed")
         except Exception as exc:
             message = str(exc)[-4000:]
-            self._state(job_id, "failed", error=message)
+            failure_data: Dict[str, Any] = {"error": message}
+            session = record.get("session")
+            if session:
+                failure_data.update({"partial": True, "session": session})
+                self.emit_event(job_id, "job.partial", phase="cloudcli.session", session=session, error=message)
+            self._state(job_id, "failed", **failure_data)
             record["status"] = "failed"
             try:
                 os.unlink(record["lease_path"])
             except OSError:
                 pass
-            self.emit_event(job_id, "job.failed", error=message)
+            self.emit_event(job_id, "job.failed", **failure_data)
 
     def submit(self, request: Dict[str, Any]) -> None:
         job_id = safe_job_id(request.get("job_id"))

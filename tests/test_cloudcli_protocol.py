@@ -95,6 +95,77 @@ class TestCloudCLIProtocol(unittest.TestCase):
             executor._stop.set()
             executor._lease_thread.join(timeout=2)
 
+    def test_session_then_later_failure_is_marked_partial(self):
+        target = self.state_dir / "partial-project"
+        executor = EdgeExecutor(str(self.state_dir / "partial-state"))
+        try:
+            executor.submit(
+                {
+                    "type": "submit",
+                    "job_id": "job-cloudcli-partial",
+                    "steps": [
+                        {"id": "workspace-create", "action": "workspace.create", "target": str(target)},
+                        {
+                            "id": "cloudcli-session",
+                            "action": "cloudcli.session",
+                            "project_path": str(target),
+                            "provider": "codex",
+                            "base_url": "http://127.0.0.1:%s" % self.server.server_port,
+                            "public_url": "https://cli.daduiot.com",
+                        },
+                        {
+                            "id": "later-failure",
+                            "action": "exec",
+                            "argv": ["/bin/sh", "-c", "exit 17"],
+                            "cwd": str(target),
+                        },
+                    ],
+                }
+            )
+            worker = executor._jobs["job-cloudcli-partial"]["worker"]
+            worker.join(timeout=10)
+            self.assertFalse(worker.is_alive())
+            events_path = self.state_dir / "partial-state" / "runs" / "job-cloudcli-partial" / "events.ndjson"
+            events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+            partial = next(event for event in events if event.get("event") == "job.partial")
+            failed = next(event for event in events if event.get("event") == "job.failed")
+            self.assertEqual(partial["session"]["session_id"], "session-test")
+            self.assertTrue(failed["partial"])
+            self.assertEqual(failed["session"]["url"], "https://cli.daduiot.com/session/session-test")
+            state = json.loads((self.state_dir / "partial-state" / "runs" / "job-cloudcli-partial" / "state.json").read_text())
+            self.assertTrue(state["partial"])
+            self.assertEqual(state["session"]["session_id"], "session-test")
+        finally:
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
+
+    def test_cloudcli_rejects_unsafe_workspace_and_invalid_url(self):
+        executor = EdgeExecutor(str(self.state_dir / "validation-state"))
+        try:
+            with self.assertRaisesRegex(Exception, "outside the remote home"):
+                executor._execute_step(
+                    "job-cloudcli-validation",
+                    {
+                        "action": "cloudcli.session",
+                        "project_path": "/tmp/not-inside-home",
+                        "provider": "codex",
+                        "base_url": "http://127.0.0.1:1",
+                    },
+                )
+            with self.assertRaisesRegex(Exception, r"absolute HTTP\(S\) URL"):
+                executor._execute_step(
+                    "job-cloudcli-validation",
+                    {
+                        "action": "cloudcli.session",
+                        "project_path": str(self.state_dir),
+                        "provider": "codex",
+                        "base_url": "localhost:3001",
+                    },
+                )
+        finally:
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
+
 
 if __name__ == "__main__":
     unittest.main()

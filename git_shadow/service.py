@@ -225,6 +225,9 @@ class ServiceClient(EdgeClient):
                 if event.get("event") == "job.failed":
                     result["status"] = "failed"
                     result["error"] = event.get("error", "remote job failed")
+                    if event.get("partial"):
+                        result["partial"] = True
+                        result["session"] = event.get("session")
                     break
             if result["status"] == "failed":
                 raise RuntimeError(str(result.get("error")))
