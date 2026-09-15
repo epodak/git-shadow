@@ -48,7 +48,7 @@ remote_hash == base_hash        -> fsync + 原子替换/删除
 其他                            -> 冲突，保留远端原文件和本地冲突副本
 ```
 
-冲突不得覆盖远端文件，也不得继续创建 CloudCLI Session。成功的 `shadow.applied` 事件才会推进本地 Manifest 的 `synced_hash`；失败或断线不能伪造同步确认。
+冲突不得覆盖远端文件。由于 CloudCLI 可以在项目目录创建后立即启动，CAS 冲突可能发生在 Session 已经打开之后；此时必须广播失败、停止后续任务并禁止重复创建 Session。成功的 `shadow.applied` 事件才会推进本地 Manifest 的 `synced_hash`；失败或断线不能伪造同步确认。
 
 Manifest 只保存路径和哈希，不保存密钥内容。目标文件使用同目录临时文件、`fsync` 和 `os.replace`，避免半写入状态被另一端读取。
 

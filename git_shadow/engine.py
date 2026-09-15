@@ -201,6 +201,16 @@ class ShadowEngine:
         shadow_files = shadow_files if shadow_files is not None else self.repo.scan_shadow_files()
         steps: List[Dict[str, Any]] = []
 
+        # Create the project directory first so CloudCLI can create a Session
+        # against it before the potentially slow Git clone starts.
+        steps.append(
+            {
+                "id": "workspace.create",
+                "action": "workspace.create",
+                "target": target_dir,
+            }
+        )
+
         workspace_step: Dict[str, Any] = {
             "id": "workspace.prepare",
             "action": "workspace.prepare",
@@ -220,6 +230,22 @@ class ShadowEngine:
             )
             if archive_proc.returncode == 0 and archive_proc.stdout:
                 workspace_step["archive_b64"] = base64.b64encode(archive_proc.stdout).decode("ascii")
+        if include_cloudcli:
+            if not provider:
+                raise ValueError("CloudCLI plan requires a provider")
+            session_step: Dict[str, Any] = {
+                "id": "cloudcli.session",
+                "action": "cloudcli.session",
+                "project_path": target_dir,
+                "provider": provider,
+                "public_url": public_url.rstrip("/"),
+                "initial_message": "",
+            }
+            if cloudcli_base_url:
+                session_step["base_url"] = cloudcli_base_url.rstrip("/")
+            steps.append(session_step)
+
+        # CloudCLI is now live; clone/init continues as a later edge step.
         steps.append(workspace_step)
 
         if shadow_files:
@@ -247,21 +273,6 @@ class ShadowEngine:
                     }
                 )
 
-        if include_cloudcli:
-            if not provider:
-                raise ValueError("CloudCLI plan requires a provider")
-            steps.append(
-                {
-                    "id": "cloudcli.session",
-                    "action": "cloudcli.session",
-                    "project_path": target_dir,
-                    "provider": provider,
-                    "public_url": public_url.rstrip("/"),
-                    "initial_message": "",
-                }
-            )
-            if cloudcli_base_url:
-                steps[-1]["base_url"] = cloudcli_base_url.rstrip("/")
         return {"protocol": 1, "project_path": target_dir, "provider": provider, "steps": steps}
 
     def open_cloudcli_optimistic(self, domain: str = "cli.daduiot.com") -> str:

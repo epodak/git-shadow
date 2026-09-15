@@ -338,10 +338,20 @@ class EdgeExecutor:
                 run_checked(["git", "clone", "--", remote_url, str(target)], timeout=1800)
             elif not (target / ".git").exists():
                 if any(target.iterdir()):
-                    raise EdgeError("target exists but is not an empty Git workspace: %s" % target)
-                run_checked(["git", "clone", "--", remote_url, str(target)], timeout=1800)
-            run_checked(["git", "fetch", "origin"], cwd=target, timeout=900)
-            run_checked(["git", "checkout", branch], cwd=target, timeout=900)
+                    try:
+                        run_checked(["git", "init", "-b", branch], cwd=target)
+                    except EdgeError:
+                        run_checked(["git", "init"], cwd=target)
+                    run_checked(["git", "remote", "add", "origin", remote_url], cwd=target)
+                    run_checked(["git", "fetch", "origin"], cwd=target, timeout=900)
+                    run_checked(["git", "checkout", "-B", branch, "origin/" + branch], cwd=target, timeout=900)
+                else:
+                    run_checked(["git", "clone", "--", remote_url, str(target)], timeout=1800)
+            else:
+                run_checked(["git", "fetch", "origin"], cwd=target, timeout=900)
+                run_checked(["git", "checkout", branch], cwd=target, timeout=900)
+            if (target / ".git").exists() and not (target / ".git" / "config").exists():
+                raise EdgeError("Git workspace was not initialized: %s" % target)
             if pull:
                 run_checked(["git", "pull", "origin", branch], cwd=target, timeout=900)
             return
@@ -352,12 +362,18 @@ class EdgeExecutor:
                 run_checked(["git", "init", "-b", branch], cwd=target)
             except EdgeError:
                 run_checked(["git", "init"], cwd=target)
+        commit = str(step.get("commit") or "")
         archive_b64 = step.get("archive_b64")
         if archive_b64:
             self._safe_extract(base64.b64decode(str(archive_b64)), target)
-            commit = str(step.get("commit") or "")
-            if commit:
-                (target / ".git/SHADOW_COMMIT").write_text(commit + "\n", encoding="utf-8")
+        if commit:
+            (target / ".git/SHADOW_COMMIT").write_text(commit + "\n", encoding="utf-8")
+
+    def _workspace_create(self, step: Dict[str, Any]) -> None:
+        target = ensure_inside(str(step.get("target", "")), self.home)
+        if target.exists() and not target.is_dir():
+            raise EdgeError("workspace target is not a directory: %s" % target)
+        target.mkdir(parents=True, exist_ok=True)
 
     def _apply_patch(self, step: Dict[str, Any]) -> None:
         cwd = self._validate_cwd(str(step.get("cwd") or ""))
@@ -587,6 +603,9 @@ class EdgeExecutor:
             return {}
         if action == "workspace.prepare":
             self._workspace_prepare(step)
+            return {}
+        if action == "workspace.create":
+            self._workspace_create(step)
             return {}
         if action == "shadow.sync":
             return self._shadow_sync(job_id, step)

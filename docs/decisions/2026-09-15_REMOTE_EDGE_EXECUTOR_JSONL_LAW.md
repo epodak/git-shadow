@@ -77,14 +77,15 @@ VPS 为每个任务保存：
 任务步骤必须是结构化动作：
 
 ```text
+workspace.create
+cloudcli.session
 workspace.prepare
 shadow.sync
 patch.apply                 # 仅在用户显式选择 --wip 时出现
-cloudcli.session
 exec(argv=[...])
 ```
 
-`workspace.prepare` 只建立或对齐 Git 代码基线；它不是全量文件同步。`shadow.sync` 执行独立的 Manifest/CAS 原子投影，遇到远端基线变化必须发出冲突事件并让任务失败。`patch.apply` 是一次性 WIP 例外，不属于默认同步路径。
+`workspace.create` 只创建项目目录，不等待代码准备。CloudCLI Session 必须紧跟在目录创建之后，让用户可以立即进入会话；`workspace.prepare` 随后在同一个边缘任务中执行 Git clone/init/checkout。`shadow.sync` 执行独立的 Manifest/CAS 原子投影，遇到远端基线变化必须发出冲突事件并让任务失败。`patch.apply` 是一次性 WIP 例外，不属于默认同步路径。
 
 默认禁止把多个命令拼成一条未校验的 Shell 字符串。`exec` 也只接收 argv 数组，并限制工作目录在远端用户主目录内；动作内部负责超时、进程组回收和失败事件。
 
@@ -93,11 +94,12 @@ exec(argv=[...])
 远端执行器按明确路径创建 CloudCLI Project 和 Session：
 
 ```text
-workspace.prepare
-  → shadow.sync (CAS；冲突则停止)
+workspace.create
   → POST /api/projects/create-project
   → POST /api/providers/sessions
-  → event: session.ready
+  → event: session.ready (本地立即打开深链)
+  → workspace.prepare (后台 clone/init/checkout)
+  → shadow.sync (CAS)
 ```
 
 `session.ready` 事件携带 provider、projectPath、sessionId 和公共 URL。本地收到后打开 `/session/{id}`，不再扫描 SQLite 并猜测“最新会话”。

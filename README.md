@@ -101,6 +101,10 @@ For CloudCLI, `git-shadow` uploads a standalone VPS executor, submits one
 typed job over a clean SSH JSONL channel, streams progress asynchronously, and
 opens the exact session returned by CloudCLI:
 
+The session is created immediately after the remote project directory exists;
+Git clone/checkout and Shadow CAS projection continue afterward, so Codex can
+start observing the workspace while preparation is still running.
+
 ```bash
 git shadow edge install aws-micro
 git shadow run aws-micro cloudcli --provider codex

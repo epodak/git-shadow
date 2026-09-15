@@ -56,8 +56,8 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 - 长任务不得由本地逐条等待 SSH 返回；本地将结构化 `TypedExecutionPlan` 一次提交给 VPS 边缘执行器。
 - 传输使用同一条干净 SSH 通道上的双向 JSONL：提交同步返回 `accepted + job_id`，执行过程异步广播 `step.started`、`output`、`session.ready`、`job.completed` 或 `job.failed`。
 - VPS 为每个 Job 持久化脱敏的 `request.json`、`state.json` 和带单调 `seq` 的 `events.ndjson`；本地断线后必须使用 `resume + after_seq` 重放，不得重新猜测最新会话。
-- 默认只允许结构化动作（`workspace.prepare`、`shadow.sync`、`cloudcli.session` 和 argv 数组形式的 `exec`），禁止无校验的 Shell 命令串拼接；`patch.apply` 仅在用户显式传入 `--wip` 时出现。
-- `workspace.prepare` 只对齐 Git 代码基线；`shadow.sync` 携带 `base_hash/local_hash` 并由 VPS 执行 CAS，收到 `shadow.conflict` 时不得继续创建会话。
+- 默认只允许结构化动作（`workspace.create`、`cloudcli.session`、`workspace.prepare`、`shadow.sync` 和 argv 数组形式的 `exec`），禁止无校验的 Shell 命令串拼接；`patch.apply` 仅在用户显式传入 `--wip` 时出现。
+- `workspace.create` 后立即创建 CloudCLI Session；随后 `workspace.prepare` 才执行 Git clone/init/checkout，`shadow.sync` 携带 `base_hash/local_hash` 并由 VPS 执行 CAS。若 CAS 冲突，任务必须广播失败，禁止伪造“工作区已准备完成”或重复创建 Session。
 - CloudCLI 会话必须由同一个远端 Job 明确创建，收到 `session.ready` 后才打开 `/session/<id>`；禁止直接扫描 SQLite 选择“最新会话”。
 - CloudCLI provider 必须在 Session 创建前确定；命令行使用 `--provider`，交互模式使用本地菜单。当前数据库 provider 非空，不创建 provider-neutral 临时 Session。
 - 短任务完成即退出；长期服务继续遵循 600 秒 Lease 心跳和超时自毁契约。

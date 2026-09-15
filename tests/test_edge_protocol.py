@@ -239,6 +239,25 @@ class TestEdgeProtocol(unittest.TestCase):
         self.assertNotIn("patch.apply", [step["action"] for step in default_plan["steps"]])
         self.assertIn("patch.apply", [step["action"] for step in wip_plan["steps"]])
 
+    def test_cloudcli_session_is_before_git_prepare(self):
+        from git_shadow.engine import ShadowEngine
+
+        repo = SimpleNamespace(
+            root_dir=str(self.workspace),
+            remote_url="https://example.invalid/repo.git",
+            branch="main",
+            commit="abc123",
+            is_dirty=False,
+        )
+        engine = ShadowEngine.__new__(ShadowEngine)
+        engine.repo = repo
+        engine.remote_dir = str(self.workspace / "early-session")
+        plan = engine.build_edge_plan(provider="codex", include_cloudcli=True, shadow_files=[])
+        self.assertEqual(
+            [step["action"] for step in plan["steps"]],
+            ["workspace.create", "cloudcli.session", "workspace.prepare"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
