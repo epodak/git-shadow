@@ -10,10 +10,13 @@ usage() {
 EOF
 }
 
-if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
+if [[ $# -lt 1 ]]; then
     usage >&2
-    [[ $# -ge 1 ]] && [[ "$1" == "-h" || "$1" == "--help" ]] && exit 0
     exit 2
+fi
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    usage
+    exit 0
 fi
 
 REMOTE_HOST="$1"
