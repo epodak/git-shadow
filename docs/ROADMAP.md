@@ -11,7 +11,7 @@
 - [x] VPS 单文件边缘执行器、事件日志、Lease 取消、状态和重放
 - [x] `workspace.create → cloudcli.session → workspace.prepare → shadow.sync`
 - [x] Git 代码层、Shadow CAS 层、Native Runtime 层分离
-- [x] 本地 `.gitshadow` 单向 watcher
+- [x] 本地 `.gitshadow` 双向 watcher（push + pull）
 - [x] WIP 补丁改为显式 `--wip`
 - [x] 项目级 VPS service-agent：Unix socket、状态、Lease 自毁与 SSH 客户端
 
@@ -83,8 +83,8 @@
 
 - [ ] Shadow 内容只存在于 SSH 内存管道和受控冲突目录
 - [ ] 所有路径、归档、环境变量和 argv 输入测试
-- [ ] CloudCLI token/API key 不进入 request、event、错误信息
-- [ ] 远端工作区权限、边缘程序权限和状态目录权限收紧
+- [x] CloudCLI token/API key 不进入 request、event、错误信息
+- [x] 边缘程序和状态目录权限收紧；远端工作区权限保留真实 VPS smoke 验收
 - [ ] VPS 磁盘、内存、Lease、Job 数量的治理策略
 - [ ] `probe` 输出与实际服务能力一致
 

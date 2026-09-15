@@ -22,7 +22,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 | **数字菜单智能挑选** | `git shadow run <host>` | 自动探查远端已就绪的 AI Agent，呈现数字菜单供一键挑选启动 |
 | **前台随行实时监听** | `git shadow run <host> [agent] --watch` | 范式 A：本地 `.gitshadow` 变化推送、远端变化定期拉取，**终端关闭即自动随行销毁，零残留** |
 | **Linux 后台服务治理** | `git shadow service <host> load` | 范式 B：将项目级任务执行服务挂载到远端 Linux 后台，**带 10 分钟心跳租约超时自毁，彻底释放 VPS 内存** |
-| **注销 Linux 守护** | `git shadow service <host> unload` | 优雅停止远端 watcher 进程，清除 PID 锁与句柄，100% 归还物理内存 |
+| **注销 Linux 服务** | `git shadow service <host> unload` | 优雅停止远端任务服务，清除 PID/Lease/socket，归还服务进程资源 |
 | **检查服务状态** | `git shadow service <host> status` | 查看远端服务 PID、版本、状态与租约剩余秒数 |
 | **环境与工具全景诊断** | `git shadow probe <host>` | 格式化输出远端 OS、架构、主目录、工作区路径（`~/wkspace`）及已安装 AI Agent 版本 |
 | **Git 鉴权与身份治理** | `git shadow auth sync <host>` | 遵循 Diff-First 契约，净化同步本地 SSH 密钥到远端，打通 GitHub 权限并对齐提交人信息 |

@@ -210,6 +210,10 @@ class EdgeExecutor:
             self.home,
         )
         self.state_root.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self.state_root, 0o700)
+        except OSError:
+            pass
         self._write_lock = threading.Lock()
         self._jobs: Dict[str, Dict[str, Any]] = {}
         self._stop = threading.Event()
