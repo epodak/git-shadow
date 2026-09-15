@@ -826,8 +826,26 @@ class EdgeExecutor:
                     raise EdgeError("step %s is not an object" % index)
                 step = dict(raw_step)
                 step_id = str(step.get("id") or "step-%s" % index)
-                self.emit_event(job_id, "step.started", step=step_id, action=step.get("action"), index=index)
-                result = self._execute_step(job_id, step)
+                retries = max(0, min(3, int(step.get("retries", 0))))
+                attempt = 0
+                while True:
+                    self.emit_event(job_id, "step.started", step=step_id, action=step.get("action"), index=index, attempt=attempt + 1)
+                    try:
+                        result = self._execute_step(job_id, step)
+                        break
+                    except Exception as exc:
+                        if attempt >= retries:
+                            raise
+                        attempt += 1
+                        self.emit_event(
+                            job_id,
+                            "step.retry",
+                            step=step_id,
+                            action=step.get("action"),
+                            attempt=attempt + 1,
+                            error=str(exc)[-2000:],
+                        )
+                        time.sleep(min(2, 0.25 * attempt))
                 if step.get("action") == "cloudcli.session" and isinstance(result, dict):
                     record["session"] = {
                         key: result[key]

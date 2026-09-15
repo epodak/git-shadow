@@ -133,6 +133,8 @@ def print_edge_event(event: dict) -> None:
         print(f"{prefix}{event.get('message', '')}", flush=True)
     elif event.get("event") == "step.succeeded":
         log_success("远端完成: %s" % event.get("step", "step"))
+    elif event.get("event") == "step.retry":
+        log_warn("远端步骤将重试 #%s: %s" % (event.get("attempt", ""), event.get("step", "step")))
     elif event.get("event") == "session.ready":
         url = event.get("url", "")
         log_success("CloudCLI 会话已创建: %s" % url)

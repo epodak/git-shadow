@@ -180,6 +180,43 @@ class TestEdgeProtocol(unittest.TestCase):
             executor._stop.set()
             executor._lease_thread.join(timeout=2)
 
+    def test_marked_step_retries_once_and_succeeds(self):
+        from git_shadow.edge_agent import EdgeExecutor
+
+        marker = self.workspace / "retry-marker"
+        executor = EdgeExecutor(str(self.state_dir / "state-retry"))
+        try:
+            executor.submit(
+                {
+                    "type": "submit",
+                    "job_id": "job-retry-step",
+                    "steps": [
+                        {
+                            "id": "retryable",
+                            "action": "exec",
+                            "retries": 1,
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                "import pathlib,sys; p=pathlib.Path('retry-marker'); "
+                                "sys.exit(0) if p.exists() else None; "
+                                "p.write_text('seen'); sys.exit(1)",
+                            ],
+                            "cwd": str(self.workspace),
+                        }
+                    ],
+                }
+            )
+            worker = executor._jobs["job-retry-step"]["worker"]
+            worker.join(timeout=8)
+            self.assertFalse(worker.is_alive())
+            events = list(executor._jobs["job-retry-step"]["journal"].replay(0))
+            self.assertEqual(sum(event.get("event") == "step.retry" for event in events), 1)
+            self.assertEqual(events[-1]["event"], "job.completed")
+        finally:
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
+
     def test_shadow_sync_preserves_remote_change_and_reports_conflict(self):
         from git_shadow.edge_agent import EdgeExecutor
 

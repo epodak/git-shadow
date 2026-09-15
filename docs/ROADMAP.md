@@ -64,8 +64,8 @@
 
 ## 4. P1：任务可靠性
 
-- [ ] 区分 replay、retry、resume 三种语义
-- [ ] 失败步骤可幂等重试
+- [x] 区分 replay、retry、resume 三种语义
+- [x] 标记为可重试的准备步骤可有限幂等重试；CloudCLI/exec/CAS 冲突默认不重试
 - [x] 常驻 service SSH 断线后自动重连并按 seq 去重/补齐事件
 - [x] CloudCLI Session 已创建但后续失败时广播明确的 partial state
 - [x] 常驻 service 的重复提交、断线重连和幂等 job_id 测试

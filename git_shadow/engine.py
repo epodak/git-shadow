@@ -220,6 +220,7 @@ class ShadowEngine:
             "commit": self.repo.commit,
             "pull": sync_git_pull,
             "git_enabled": bool(getattr(self.repo, "is_git", True) or self.repo.remote_url),
+            "retries": 2,
         }
         if not self.repo.remote_url and getattr(self.repo, "is_git", True):
             archive_proc = subprocess.run(
