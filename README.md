@@ -80,6 +80,16 @@ export PYTHONPATH="/path/to/git-shadow:$PYTHONPATH"
 exec python -m git_shadow.cli "$@"
 ```
 
+The same wrappers can be generated from the checkout:
+
+```bash
+python3 -m git_shadow.cli install ~/.local/bin
+```
+
+`pip install -e .` is optional for the local controller. The VPS does not need
+the package or pip: `edge install`/`service load` upload standalone Python
+executors and run them with the VPS's existing `python3`.
+
 #### How `git shadow` Works (Git Subcommand Discovery)
 Git has a built-in subcommand discovery mechanism: whenever you type `git <subcommand>`, Git searches your system `$PATH` for an executable named `git-<subcommand>`.
 Therefore, having `git-shadow` in your `$PATH` enables both commands interchangeably:

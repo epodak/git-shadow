@@ -10,6 +10,7 @@ import json
 import hashlib
 import threading
 import time
+import pathlib
 from typing import List, Optional
 
 from . import __version__
@@ -19,6 +20,7 @@ from .edge import EdgeClient
 from .service import ServiceClient
 from .shadow_sync import ShadowManifestStore
 from .watcher import LocalChangeWatcher
+from .install import install_wrappers
 from .probe import RemoteProbe
 from .auth import AuthManager
 from .tree import DiffTreeRenderer
@@ -60,6 +62,7 @@ def print_help():
   {Colors.GREEN}pull <host> --with-shadows{Colors.RESET} 同时拉取已登记的远端 .gitshadow 变化
   {Colors.GREEN}edge install <host>{Colors.RESET} 安装/更新 VPS 端 JSONL 边缘执行器
   {Colors.GREEN}edge status <host> <job>{Colors.RESET} 查询远端任务状态
+  {Colors.GREEN}install [dir]{Colors.RESET}     安装本地 git-shadow / git-shadow.cmd wrapper（默认 ~/.local/bin）
   {Colors.GREEN}service <host> load|status|unload{Colors.RESET} 管理项目级 VPS 常驻边缘服务
   {Colors.GREEN}run/push/pull/up ... --service{Colors.RESET} 通过常驻服务提交任务，断开后可恢复
   {Colors.GREEN}run <host> [agent] --watch{Colors.RESET} 仅自动监听并同步 .gitshadow，Git 代码仍走 Git
@@ -213,6 +216,18 @@ def main(args: Optional[List[str]] = None):
             sys.exit(1)
         cmd_diff(repo)
         sys.exit(0)
+
+    if subcmd == "install":
+        destination = sub_args[0] if sub_args else "~/.local/bin"
+        try:
+            installed = install_wrappers(destination)
+            for path in installed:
+                log_success("已安装 CLI wrapper: %s" % path)
+            log_info("将 %s 加入 PATH 后即可使用 `git shadow` / `git-shadow`." % pathlib.Path(destination).expanduser())
+            sys.exit(0)
+        except OSError as exc:
+            log_error("本地 wrapper 安装失败: %s" % exc)
+            sys.exit(1)
 
     # 2. auth 子命令族 (例如: git shadow auth sync <host> [--key <key>])
     if subcmd == "auth":

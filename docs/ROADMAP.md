@@ -19,10 +19,10 @@
 
 ### 1.1 CLI 与安装
 
-- [ ] 提供可靠的 `git-shadow`/`git shadow` wrapper 安装方式
-- [ ] 明确控制端和 VPS 端的 Python 依赖边界
+- [x] 提供可靠的 `git-shadow`/`git shadow` wrapper 安装方式
+- [x] 明确控制端和 VPS 端的 Python 依赖边界
 - [ ] `edge install` 失败时给出可恢复诊断
-- [ ] 不依赖 `pip` 的 VPS 边缘执行器验收
+- [x] 不依赖 `pip` 的 VPS 边缘执行器验收（standalone agent 协议测试）
 
 ### 1.2 CloudCLI 编排
 
