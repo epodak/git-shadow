@@ -156,6 +156,7 @@ git shadow service aws-micro unload
 
 `service-agent` 负责 VPS 端任务执行、事件重放和租约自毁；本地 `--watch` 仍是发现本地
 `.gitshadow` 变化并触发双向 CAS 的控制端。服务端不会把本地磁盘变化猜成同步请求。
+常驻服务连接中断时，控制端会用同一 `job_id` 重连并按事件序号去重，不会重复执行同一任务。
 
 #### 🔄 Pull AI's committed changes back to local
 ```bash

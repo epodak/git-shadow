@@ -65,9 +65,9 @@
 
 - [ ] 区分 replay、retry、resume 三种语义
 - [ ] 失败步骤可幂等重试
-- [ ] SSH 断线后本地自动重连并按 seq 补齐事件
+- [x] 常驻 service SSH 断线后自动重连并按 seq 去重/补齐事件
 - [ ] CloudCLI Session 已创建但后续失败时广播明确的 partial state
-- [ ] Job 取消、超时、重复提交和幂等 job_id 测试
+- [x] 常驻 service 的重复提交、断线重连和幂等 job_id 测试
 - [ ] 任务日志大小上限和清理策略
 
 ## 5. P1：本地体验与性能

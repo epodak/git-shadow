@@ -1,6 +1,7 @@
 import json
 import pathlib
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -108,6 +109,48 @@ class TestServiceAgent(unittest.TestCase):
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=5)
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+
+    def test_reconnecting_same_job_replays_without_duplicate_execution(self):
+        process = self._start()
+        request = {
+            "type": "submit",
+            "job_id": "job-service-reconnect",
+            "steps": [
+                {
+                    "id": "slow-output",
+                    "action": "exec",
+                    "argv": [sys.executable, "-c", "import time; print('once'); time.sleep(0.4)"],
+                    "cwd": str(self.workspace),
+                }
+            ],
+        }
+        try:
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            connection.connect(str(self.service_root / "service.sock"))
+            connection.sendall((json.dumps(request) + "\n").encode())
+            connection.shutdown(socket.SHUT_WR)
+            accepted = b""
+            while b'"type":"accepted"' not in accepted and b'"type": "accepted"' not in accepted:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                accepted += chunk
+            connection.close()
+
+            events = self._send(request)
+            self.assertTrue(any(item.get("event") == "job.completed" for item in events))
+            journal = self.state_root / "runs" / "job-service-reconnect" / "events.ndjson"
+            persisted = [json.loads(line) for line in journal.read_text().splitlines()]
+            self.assertEqual(sum(item.get("event") == "job.started" for item in persisted), 1)
+            self.assertEqual(sum(item.get("event") == "job.completed" for item in persisted), 1)
+            self.assertEqual(sum(item.get("event") == "output" and item.get("message") == "once" for item in persisted), 1)
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
             if process.stdout:
                 process.stdout.close()
             if process.stderr:

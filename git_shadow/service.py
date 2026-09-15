@@ -179,63 +179,95 @@ class ServiceClient(EdgeClient):
             raise RuntimeError("VPS 常驻服务未加载，请先执行 service load")
         job_id = str(plan.get("job_id") or self.new_job_id())
         request = {**plan, "type": "submit", "job_id": job_id}
-        process = self.open()
-        stderr_lines: List[str] = []
+        result: Dict[str, Any] = {"job_id": job_id, "status": "accepted"}
+        last_seq = 0
+        max_attempts = 4
+        for attempt in range(max_attempts):
+            process = self.open()
+            stderr_lines: List[str] = []
 
-        def read_stderr() -> None:
-            if process.stderr is None:
-                return
-            for line in process.stderr:
-                stderr_lines.append(line.rstrip())
+            def read_stderr() -> None:
+                if process.stderr is None:
+                    return
+                for line in process.stderr:
+                    stderr_lines.append(line.rstrip())
 
-        threading.Thread(target=read_stderr, daemon=True).start()
-        heartbeat_stop = threading.Event()
+            threading.Thread(target=read_stderr, daemon=True).start()
+            heartbeat_stop = threading.Event()
 
-        def heartbeat_loop() -> None:
-            while not heartbeat_stop.wait(60):
-                self._touch_lease()
+            def heartbeat_loop() -> None:
+                while not heartbeat_stop.wait(60):
+                    self._touch_lease()
 
-        heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
-        heartbeat_thread.start()
-        try:
-            if process.stdin is None:
-                raise RuntimeError("VPS service stdin is unavailable")
-            process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
-            process.stdin.flush()
-            process.stdin.close()
-            result: Dict[str, Any] = {"job_id": job_id, "status": "accepted"}
-            if not wait_for_completion:
-                return result
-            if process.stdout is None:
-                raise RuntimeError("VPS service stdout is unavailable")
-            for line in process.stdout:
-                if not line.strip():
-                    continue
+            heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+            heartbeat_thread.start()
+            terminal = False
+            try:
+                if process.stdin is None:
+                    raise RuntimeError("VPS service stdin is unavailable")
+                process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+                process.stdin.flush()
+                process.stdin.close()
+                if not wait_for_completion:
+                    return result
+                if process.stdout is None:
+                    raise RuntimeError("VPS service stdout is unavailable")
+                for line in process.stdout:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    sequence = int(event.get("seq", 0) or 0)
+                    duplicate = sequence > 0 and sequence <= last_seq
+                    if not duplicate:
+                        if sequence > 0:
+                            last_seq = sequence
+                        if on_event:
+                            on_event(event)
+                    if duplicate:
+                        continue
+                    if event.get("event") == "session.ready":
+                        result.update(event)
+                    if event.get("event") == "job.completed":
+                        result["status"] = "completed"
+                        terminal = True
+                        break
+                    if event.get("event") == "job.failed":
+                        result["status"] = "failed"
+                        result["error"] = event.get("error", "remote job failed")
+                        if event.get("partial"):
+                            result["partial"] = True
+                            result["session"] = event.get("session")
+                        terminal = True
+                        break
+                if terminal:
+                    return self._finish_result(process, result, stderr_lines)
+            except (BrokenPipeError, OSError, ValueError):
+                if attempt >= max_attempts - 1:
+                    raise
+            finally:
+                heartbeat_stop.set()
+                if process.poll() is None:
+                    process.terminate()
                 try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if on_event:
-                    on_event(event)
-                if event.get("event") == "session.ready":
-                    result.update(event)
-                if event.get("event") == "job.completed":
-                    result["status"] = "completed"
-                    break
-                if event.get("event") == "job.failed":
-                    result["status"] = "failed"
-                    result["error"] = event.get("error", "remote job failed")
-                    if event.get("partial"):
-                        result["partial"] = True
-                        result["session"] = event.get("session")
-                    break
-            if result["status"] == "failed":
-                raise RuntimeError(str(result.get("error")))
-            process.wait(timeout=10)
-            if process.returncode not in (0, None) and stderr_lines:
-                raise RuntimeError("remote service exited: %s" % stderr_lines[-1])
-            return result
-        finally:
-            heartbeat_stop.set()
-            if process.poll() is None:
-                process.terminate()
+                    process.wait(timeout=10)
+                except Exception:
+                    pass
+                if process.stdout:
+                    process.stdout.close()
+                if process.stderr:
+                    process.stderr.close()
+            if attempt < max_attempts - 1:
+                time.sleep(0.5 * (2 ** attempt))
+        raise RuntimeError("VPS service event stream disconnected before job completion")
+
+    @staticmethod
+    def _finish_result(process: subprocess.Popen, result: Dict[str, Any], stderr_lines: List[str]) -> Dict[str, Any]:
+        if result["status"] == "failed":
+            raise RuntimeError(str(result.get("error")))
+        process.wait(timeout=10)
+        if process.returncode not in (0, None) and stderr_lines:
+            raise RuntimeError("remote service exited: %s" % stderr_lines[-1])
+        return result
