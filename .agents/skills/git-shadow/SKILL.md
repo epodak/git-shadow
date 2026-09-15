@@ -40,6 +40,16 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 
 任何 AI Agent 在调用、调试或扩展 `git-shadow` 时，必须严格遵守以下法则：
 
+### 0. CLI 注册原理与 Git 原生子命令发现 (Git Subcommand Discovery)
+- **子命令发现机制**：`git shadow` 能够全局直接运行，依赖 Git 的原生扩展发现机制——当敲击 `git shadow` 时，Git 会自动从系统 `$PATH` 中定位可执行的 `git-shadow`（或 `git-shadow.cmd`）并透传全部参数；
+- **全终端免安装包装模式**：在全终端管理体系中（如 `D:/Tool/DIY` 或 `~/.local/bin`），建议采用注入 `PYTHONPATH` 的双子包装器（`git-shadow` + `git-shadow.cmd`），既不污染 Python 全局环境，又实现本地代码修改即刻热生效；
+- **关键避坑：`--help` 陷阱**：严禁调用 `git shadow --help`（Git 会尝试检索内置 HTML 手册导致报 `documentation file not found` 错误）；查看全部命令时必须使用：
+  ```bash
+  git shadow -h
+  # 或
+  git-shadow --help
+  ```
+
 ### 1. 跨平台路径防污染 (Platform Isolation)
 - **Windows MSYS2 绝对路径陷阱**：在 Windows Git Bash 下，严禁将 `/` 开头的绝对路径（如 `-d /home/...`）直接裸传给外部工具，MSYS2 会强行将其转译为 `D:/Tool/...` 等本地盘符；
 - **防御要求**：远端路径必须优先依赖远端环境探针感知的 `$HOME` 展开（如自动解析为 `/home/ubuntu/wkspace/<repo_name>`）。

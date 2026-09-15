@@ -60,21 +60,39 @@ flowchart TD
 
 ## 🚀 Quick Start
 
-### 1. Installation
+### 1. Installation & Git CLI Registration
 
 Zero external dependencies! Works with pure Python 3.8+:
 
+#### Option A: Install via Pip (Standard)
 ```bash
-# Clone and install locally
 git clone https://github.com/epodak/git-shadow.git
 cd git-shadow
 pip install -e .
 ```
 
-Because the CLI executable is named `git-shadow`, **Git will automatically recognize it as a built-in subcommand**:
+#### Option B: Standalone Wrapper (Zero Environment Pollution / Live Reload)
+You can also place a lightweight wrapper script named `git-shadow` (or `git-shadow.cmd` on Windows) into any directory in your system `$PATH` (e.g. `~/.local/bin` or `D:/Tool/DIY`):
+
 ```bash
-git shadow --help
+#!/bin/bash
+export PYTHONPATH="/path/to/git-shadow:$PYTHONPATH"
+exec python -m git_shadow.cli "$@"
 ```
+
+#### How `git shadow` Works (Git Subcommand Discovery)
+Git has a built-in subcommand discovery mechanism: whenever you type `git <subcommand>`, Git searches your system `$PATH` for an executable named `git-<subcommand>`.
+Therefore, having `git-shadow` in your `$PATH` enables both commands interchangeably:
+- `git shadow <command>`
+- `git-shadow <command>`
+
+> [!TIP]
+> **Help Flag Tip**: Running `git shadow --help` causes Git to intercept the call and look for its built-in HTML/manpage manuals (which throws a "documentation file not found" error). To view the complete CLI options and ASCII banner, use:
+> ```bash
+> git shadow -h
+> # or
+> git-shadow --help
+> ```
 
 ### 2. Common Usage
 
@@ -159,6 +177,12 @@ test_dump.sql
 - **私有状态走影子**：自动捕获本地受 `.gitignore` 保护的真实配置（`.env*`、私钥、本地调试文件），通过带基线哈希的 CAS 原子投影到远端；
 - **重型依赖走原生**：`node_modules` 与虚拟环境在远端 Linux 原生就地安装，彻底告别 Windows 与 Linux 跨平台二进制兼容性噩梦；
 - **影子状态 CAS 同步**：`.gitshadow` 文件携带基线哈希并原子写入，远端同时修改时保留冲突副本而不静默覆盖；未提交代码默认留在本地，确需临时投影时显式追加 `--wip`。
+
+### 注册与执行原理：Git 原生子命令发现 (Git Subcommand Discovery)
+Git 天生支持原生子命令扩展：当在终端执行 `git <subcommand>` 时，Git 会自动从系统环境变量 `PATH` 中检索名为 `git-<subcommand>` 的可执行体（在 Windows 下优先匹配 `git-shadow.cmd`、`git-shadow.exe`、`git-shadow` 等）。
+- 因此，无论是 `git shadow <command>` 还是 `git-shadow <command>` 均可完全等价无缝调用；
+- **免安装热重载方案**：将简单包装脚本（设置 `PYTHONPATH` 指向工程目录并调用 `python -m git_shadow.cli`）放入任意系统 `PATH` 路径（如 `D:/Tool/DIY` 或 `~/.local/bin`），即可零污染系统 Python 环境，且修改源码即刻生效；
+- **查看帮助避坑**：因 Git 官方机制会拦截 `--help` 转去寻找内置 HTML 手册并报错，查看帮助请统一使用 **`git shadow -h`** 或 **`git-shadow --help`**。
 
 ---
 
