@@ -20,6 +20,7 @@ import os
 import pathlib
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tarfile
@@ -335,6 +336,8 @@ class EdgeExecutor:
         branch = str(step.get("branch") or "main")
         pull = bool(step.get("pull"))
         target.parent.mkdir(parents=True, exist_ok=True)
+        preexisting_key = str(target)
+        preexisting = self._snapshot_workspace(target) if target.exists() and not (target / ".git").exists() else []
 
         if remote_url:
             if not target.exists():
@@ -347,7 +350,13 @@ class EdgeExecutor:
                         run_checked(["git", "init"], cwd=target)
                     run_checked(["git", "remote", "add", "origin", remote_url], cwd=target)
                     run_checked(["git", "fetch", "origin"], cwd=target, timeout=900)
-                    run_checked(["git", "checkout", "-B", branch, "origin/" + branch], cwd=target, timeout=900)
+                    self._clear_snapshot_paths(target, preexisting)
+                    try:
+                        run_checked(["git", "checkout", "-B", branch, "origin/" + branch], cwd=target, timeout=900)
+                    except Exception:
+                        self._restore_workspace(target, preexisting)
+                        raise
+                    self._restore_workspace(target, preexisting)
                 else:
                     run_checked(["git", "clone", "--", remote_url, str(target)], timeout=1800)
             else:
@@ -357,6 +366,7 @@ class EdgeExecutor:
                 raise EdgeError("Git workspace was not initialized: %s" % target)
             if pull:
                 run_checked(["git", "pull", "origin", branch], cwd=target, timeout=900)
+            self._restore_workspace(target, preexisting)
             return
 
         target.mkdir(parents=True, exist_ok=True)
@@ -371,6 +381,52 @@ class EdgeExecutor:
             self._safe_extract(base64.b64decode(str(archive_b64)), target)
         if commit:
             (target / ".git/SHADOW_COMMIT").write_text(commit + "\n", encoding="utf-8")
+        self._restore_workspace(target, preexisting)
+
+    @staticmethod
+    def _clear_snapshot_paths(target: pathlib.Path, snapshot: List[Tuple[str, bytes, int]]) -> None:
+        for relative, _payload, _mode in snapshot:
+            destination = target / pathlib.Path(*relative.split("/"))
+            try:
+                if destination.is_file() or destination.is_symlink():
+                    destination.unlink()
+            except OSError:
+                continue
+
+    @staticmethod
+    def _snapshot_workspace(target: pathlib.Path) -> List[Tuple[str, bytes, int]]:
+        """Keep optimistic pre-clone files in memory until Git is ready."""
+        snapshot: List[Tuple[str, bytes, int]] = []
+        try:
+            candidates = target.rglob("*")
+        except OSError:
+            return snapshot
+        for candidate in candidates:
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            try:
+                relative = candidate.relative_to(target).as_posix()
+                mode = stat.S_IMODE(candidate.stat().st_mode)
+                snapshot.append((relative, candidate.read_bytes(), mode))
+            except OSError:
+                continue
+        return snapshot
+
+    @staticmethod
+    def _restore_workspace(target: pathlib.Path, snapshot: List[Tuple[str, bytes, int]]) -> None:
+        """Overlay files written before clone/init without persisting plaintext."""
+        for relative, payload, mode in snapshot:
+            destination = target / pathlib.Path(*relative.split("/"))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.is_dir() and not destination.is_symlink():
+                for child in sorted(destination.rglob("*"), reverse=True):
+                    if child.is_file() or child.is_symlink():
+                        child.unlink()
+                    elif child.is_dir():
+                        child.rmdir()
+                destination.rmdir()
+            destination.write_bytes(payload)
+            os.chmod(destination, mode)
 
     def _workspace_create(self, step: Dict[str, Any]) -> None:
         target = ensure_inside(str(step.get("target", "")), self.home)
