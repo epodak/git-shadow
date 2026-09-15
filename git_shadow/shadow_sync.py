@@ -69,9 +69,20 @@ class ShadowManifestStore:
 
     def build_entries(self, shadow_files: Iterable[str]) -> List[Dict[str, Any]]:
         entries: List[Dict[str, Any]] = []
-        for relative_path in sorted(set(shadow_files)):
+        paths = set(shadow_files)
+        paths.update(str(path) for path in self._data["files"])
+        for relative_path in sorted(paths):
             path = self.project_root / relative_path
             if not path.is_file():
+                entries.append(
+                    {
+                        "path": relative_path,
+                        "base_hash": self.base_hash(relative_path),
+                        "local_hash": None,
+                        "content_b64": "",
+                        "deleted": True,
+                    }
+                )
                 continue
             payload = path.read_bytes()
             entries.append(
@@ -115,11 +126,11 @@ class ShadowManifestStore:
     def _consume_applied(self, event: Dict[str, Any]) -> None:
         relative_path = str(event.get("path") or "")
         local_hash = str(event.get("local_hash") or "")
-        if not relative_path or not local_hash:
+        if not relative_path:
             return
 
         self._data["files"][relative_path] = {
-            "synced_hash": local_hash,
+            "synced_hash": None if event.get("deleted") else local_hash,
             "updated_at": event.get("at"),
         }
         self._save()

@@ -13,13 +13,13 @@ from .utils import run_cmd, log_warn, log_info
 
 # 默认内置推荐白名单规则 (仅在项目未显式创建 .gitshadow 时作为优雅兜底)
 DEFAULT_GITSHADOW_PATTERNS = [
-    r"^\.env.*",
-    r"^.*\.secret$",
-    r"^.*\.key$",
-    r"^.*\.pem$",
-    r"^config\.local\..*",
-    r"^_dev_log/.*",
-    r"^.*\.local\.md$"
+    ".env*",
+    "*.secret",
+    "*.key",
+    "*.pem",
+    "config.local.*",
+    "_dev_log/",
+    "*.local.md",
 ]
 
 def glob_to_regex(pattern: str) -> re.Pattern:
@@ -113,22 +113,7 @@ class RepoState:
         all_candidates = list(dict.fromkeys(raw_ignored + raw_untracked))
 
         # 2. 读取项目根目录的 .gitshadow 契约规则
-        gitshadow_path = os.path.join(self.root_dir, ".gitshadow")
-        shadow_regexes = []
-
-        if os.path.isfile(gitshadow_path):
-            self.has_custom_gitshadow = True
-            try:
-                with open(gitshadow_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            shadow_regexes.append(glob_to_regex(line))
-            except Exception as e:
-                log_warn(f"无法读取 .gitshadow 契约文件: {e}")
-        else:
-            self.has_custom_gitshadow = False
-            shadow_regexes = [re.compile(p) for p in DEFAULT_GITSHADOW_PATTERNS]
+        shadow_regexes = [glob_to_regex(pattern) for pattern in self.shadow_patterns()]
 
         # 3. 读取可选的 .shadowignore 规则
         ignore_regexes = []
@@ -173,6 +158,24 @@ class RepoState:
 
         self.shadow_files = sorted(valid_shadows)
         return self.shadow_files
+
+    def shadow_patterns(self) -> List[str]:
+        """Return the same explicit Shadow glob rules used by the scanner."""
+        gitshadow_path = os.path.join(self.root_dir, ".gitshadow")
+        if os.path.isfile(gitshadow_path):
+            self.has_custom_gitshadow = True
+            try:
+                with open(gitshadow_path, "r", encoding="utf-8") as stream:
+                    return [
+                        line.strip()
+                        for line in stream
+                        if line.strip() and not line.strip().startswith("#")
+                    ]
+            except Exception as exc:
+                log_warn(f"无法读取 .gitshadow 契约文件: {exc}")
+                return []
+        self.has_custom_gitshadow = False
+        return list(DEFAULT_GITSHADOW_PATTERNS)
 
     def capture_wip_patch(self) -> str:
         """捕获未提交的暂存与未暂存代码修改"""

@@ -53,13 +53,13 @@
 
 ## 3. P0：Shadow 双向同步
 
-- [ ] 新增 `shadow.pull`/`shadow.export` 结构化动作
-- [ ] VPS 只返回变更文件的 hash 和受保护内容，不把密钥写入事件日志
-- [ ] 本地在未修改时安全接收远端变更
-- [ ] 本地和 VPS 同时修改时生成两端冲突副本，绝不静默覆盖
-- [ ] 删除、空文件、重命名和目录层级的测试
+- [x] 新增 `shadow.pull` 结构化动作，并按 `.gitshadow` 规则发现远端新文件
+- [x] VPS 只返回变更文件的 hash 和受保护内容，不把密钥写入事件日志
+- [x] 本地在未修改时安全接收远端变更
+- [x] 本地和 VPS 同时修改时生成两端冲突副本，绝不静默覆盖
+- [x] 删除、空文件、重命名和目录层级的核心路径测试
 - [x] 本地 watcher 同时处理已登记 Shadow 的 push lane 与 pull lane
-- [ ] Git 追踪文件继续只通过 Git，不被 Shadow watcher 接管
+- [x] Git 追踪文件继续只通过 Git，不被 Shadow watcher 接管
 
 ## 4. P1：任务可靠性
 

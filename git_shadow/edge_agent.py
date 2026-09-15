@@ -13,6 +13,7 @@ import base64
 import datetime as _datetime
 import errno
 import fcntl
+import fnmatch
 import hashlib
 import json
 import os
@@ -541,6 +542,26 @@ class EdgeExecutor:
         entries = step.get("entries")
         if not isinstance(entries, list):
             raise EdgeError("shadow.pull requires an entries array")
+        entries = list(entries)
+        known_paths = {str(item.get("path")) for item in entries if isinstance(item, dict)}
+        patterns = step.get("patterns") or []
+        if not isinstance(patterns, list) or not all(isinstance(pattern, str) for pattern in patterns):
+            raise EdgeError("shadow.pull patterns must be an array of strings")
+        if patterns:
+            for candidate in target.rglob("*"):
+                if not candidate.is_file() or candidate.is_symlink():
+                    continue
+                relative = candidate.relative_to(target).as_posix()
+                if ".git" in pathlib.PurePosixPath(relative).parts:
+                    continue
+                if any(
+                    relative.startswith(pattern.rstrip("/") + "/")
+                    if pattern.endswith("/")
+                    else fnmatch.fnmatch(relative, pattern) or fnmatch.fnmatch(candidate.name, pattern)
+                    for pattern in patterns
+                ) and relative not in known_paths:
+                    entries.append({"path": relative, "base_hash": None, "local_hash": None})
+                    known_paths.add(relative)
         lock_path = self._shadow_manifest_path(target).with_suffix(".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         changed = 0

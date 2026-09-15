@@ -106,6 +106,68 @@ class TestShadowPull(unittest.TestCase):
         self.assertEqual(wire_event["content_b64"], content)
         self.assertEqual(saved["content_b64"], "<redacted>")
 
+    def test_push_encodes_delete_empty_file_and_rename_as_cas_entries(self):
+        base = b"BASE\n"
+        (self.remote / ".env").write_bytes(base)
+        (self.local / ".env").write_bytes(base)
+        store = ShadowManifestStore(str(self.local), state_root=str(self.root / "local-state"))
+        base_hash = self.digest(base)
+        store.consume_event({"event": "shadow.applied", "path": ".env", "local_hash": base_hash})
+        (self.local / ".env").unlink()
+        (self.local / ".env.next").write_bytes(b"")
+
+        entries = store.build_entries([".env.next"])
+        by_path = {entry["path"]: entry for entry in entries}
+        self.assertTrue(by_path[".env"]["deleted"])
+        self.assertEqual(by_path[".env"]["base_hash"], base_hash)
+        self.assertFalse(by_path[".env.next"]["deleted"])
+        self.assertEqual(by_path[".env.next"]["content_b64"], "")
+
+        executor = EdgeExecutor(str(self.root / "remote-state-rename"))
+        events = []
+        executor.emit_event = lambda job_id, event, **data: events.append({"job_id": job_id, "event": event, **data})
+        try:
+            result = executor._execute_step(
+                "job-push-rename",
+                {"action": "shadow.sync", "target": str(self.remote), "entries": entries},
+            )
+            self.assertEqual(result, {"applied": 2, "conflicts": 0})
+            self.assertFalse((self.remote / ".env").exists())
+            self.assertEqual((self.remote / ".env.next").read_bytes(), b"")
+            self.assertEqual(len([event for event in events if event["event"] == "shadow.applied"]), 2)
+            for event in events:
+                store.consume_event(event)
+            self.assertIsNone(store.base_hash(".env"))
+            self.assertEqual(store.base_hash(".env.next"), self.digest(b""))
+        finally:
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
+
+    def test_pull_discovers_new_remote_file_through_shadow_patterns(self):
+        remote_value = b"REMOTE_NEW\n"
+        (self.remote / ".env.remote").write_bytes(remote_value)
+        store = ShadowManifestStore(str(self.local), state_root=str(self.root / "discovery-state"))
+        executor = EdgeExecutor(str(self.root / "remote-state-discovery"))
+        events = []
+        executor.emit_event = lambda job_id, event, **data: events.append({"job_id": job_id, "event": event, **data})
+        try:
+            result = executor._execute_step(
+                "job-pull-discovery",
+                {
+                    "action": "shadow.pull",
+                    "target": str(self.remote),
+                    "entries": [],
+                    "patterns": [".env*"],
+                },
+            )
+            self.assertEqual(result, {"changed": 1, "conflicts": 0})
+            self.assertEqual(events[0]["event"], "shadow.remote")
+            store.consume_event(events[0])
+            self.assertEqual((self.local / ".env.remote").read_bytes(), remote_value)
+        finally:
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
+
     def test_pull_plan_contains_workspace_creation_and_shadow_pull(self):
         from git_shadow.engine import ShadowEngine
 

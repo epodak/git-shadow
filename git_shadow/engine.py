@@ -289,6 +289,8 @@ class ShadowEngine:
         target_dir = self.resolve_remote_dir()
         files = shadow_files if shadow_files is not None else self.repo.scan_shadow_files()
         manifest = shadow_store or ShadowManifestStore(self.repo.root_dir)
+        patterns_getter = getattr(self.repo, "shadow_patterns", None)
+        patterns = patterns_getter() if callable(patterns_getter) else []
         return {
             "protocol": 1,
             "project_path": target_dir,
@@ -303,6 +305,7 @@ class ShadowEngine:
                     "action": "shadow.pull",
                     "target": target_dir,
                     "entries": manifest.build_pull_entries(files),
+                    "patterns": patterns,
                 },
             ],
         }
