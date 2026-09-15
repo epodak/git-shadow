@@ -39,11 +39,20 @@ def load_edge_module() -> Any:
 class QuietEdgeExecutor:
     """Load EdgeExecutor without writing protocol records to service stdout."""
 
-    def __init__(self, module: Any, state_root: str, subscribers: Dict[str, list], subscriber_lock: threading.Lock):
+    def __init__(
+        self,
+        module: Any,
+        state_root: str,
+        subscribers: Dict[str, list],
+        subscriber_lock: threading.Lock,
+        max_event_log_bytes: Optional[int] = None,
+        max_completed_runs: Optional[int] = None,
+    ):
         self.module = module
         base = module.EdgeExecutor
         subscribers_ref = subscribers
         lock_ref = subscriber_lock
+        journal_max_bytes = max_event_log_bytes
 
         class Executor(base):
             def emit_control(self, payload: Dict[str, Any]) -> None:
@@ -54,18 +63,37 @@ class QuietEdgeExecutor:
                     if field in data and data[field] is not None:
                         data[field] = module.scrub_text(str(data[field]))
                 record = self._jobs.get(job_id)
-                journal = record["journal"] if record is not None else module.EventJournal(self.state_root, job_id)
+                journal = (
+                    record["journal"]
+                    if record is not None
+                    else module.EventJournal(
+                        self.state_root,
+                        job_id,
+                        max_bytes=journal_max_bytes or module.DEFAULT_EVENT_LOG_MAX_BYTES,
+                    )
+                )
                 payload = journal.append({"type": "event", "job_id": job_id, "event": event, **data})
                 with lock_ref:
                     for subscriber in list(subscribers_ref.get(job_id, [])):
                         subscriber.put(payload)
                 return payload
 
-        self.instance = Executor(state_root)
+        self.instance = Executor(
+            state_root,
+            max_event_log_bytes=max_event_log_bytes,
+            max_completed_runs=max_completed_runs,
+        )
 
 
 class ServiceRuntime:
-    def __init__(self, service_root: pathlib.Path, state_root: pathlib.Path, lease_ttl: int):
+    def __init__(
+        self,
+        service_root: pathlib.Path,
+        state_root: pathlib.Path,
+        lease_ttl: int,
+        max_event_log_bytes: Optional[int] = None,
+        max_completed_runs: Optional[int] = None,
+    ):
         self.service_root = service_root
         self.state_root = state_root
         self.lease_ttl = max(1, int(lease_ttl))
@@ -82,6 +110,8 @@ class ServiceRuntime:
             str(state_root),
             self.subscribers,
             self.subscriber_lock,
+            max_event_log_bytes=max_event_log_bytes,
+            max_completed_runs=max_completed_runs,
         ).instance
         self._reconcile_interrupted_jobs()
 
@@ -288,6 +318,8 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--service-root", required=True)
     parser.add_argument("--state-dir", default=None)
     parser.add_argument("--lease-ttl", type=int, default=600)
+    parser.add_argument("--max-event-log-bytes", type=int, default=None)
+    parser.add_argument("--max-completed-runs", type=int, default=None)
     options = parser.parse_args(argv)
     service_root = pathlib.Path(options.service_root).expanduser().resolve()
     if options.send:
@@ -301,7 +333,13 @@ def main(argv: Optional[list] = None) -> int:
         state_root.relative_to(home)
     except ValueError:
         parser.error("service and state paths must remain under the remote home")
-    return ServiceRuntime(service_root, state_root, options.lease_ttl).serve()
+    return ServiceRuntime(
+        service_root,
+        state_root,
+        options.lease_ttl,
+        max_event_log_bytes=options.max_event_log_bytes,
+        max_completed_runs=options.max_completed_runs,
+    ).serve()
 
 
 if __name__ == "__main__":

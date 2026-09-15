@@ -1,5 +1,7 @@
+import contextlib
 import base64
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -91,6 +93,61 @@ class TestEdgeProtocol(unittest.TestCase):
         journal.append({"event": "safe"})
         self.assertEqual(journal.request_path.stat().st_mode & 0o077, 0)
         self.assertEqual(journal.events_path.stat().st_mode & 0o077, 0)
+
+    def test_event_journal_is_bounded_and_reports_tail_sequence(self):
+        from git_shadow.edge_agent import EventJournal
+
+        journal = EventJournal(self.state_dir / "bounded-state", "job-bounded", max_bytes=512)
+        for index in range(12):
+            journal.append({"event": "output", "message": "line-%s %s" % (index, "x" * 80)})
+
+        self.assertLessEqual(journal.events_path.stat().st_size, 512)
+        self.assertGreater(journal.first_seq(), 1)
+        replayed = list(journal.replay(0))
+        self.assertEqual(replayed[-1]["seq"], 12)
+        self.assertEqual(journal._seq, 12)
+
+    def test_resume_marks_when_the_requested_history_was_trimmed(self):
+        from git_shadow.edge_agent import EdgeExecutor
+
+        executor = EdgeExecutor(str(self.state_dir / "resume-state"), max_event_log_bytes=512)
+        try:
+            for index in range(12):
+                executor.emit_event("job-resume-trimmed", "output", message="x" * 80, index=index)
+            captured = io.StringIO()
+            with contextlib.redirect_stdout(captured):
+                executor.resume({"job_id": "job-resume-trimmed", "after_seq": 0})
+            begin = json.loads(captured.getvalue().splitlines()[0])
+            self.assertTrue(begin["truncated"])
+            self.assertGreater(begin["first_seq"], 1)
+        finally:
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
+
+    def test_terminal_run_cleanup_keeps_recent_runs_and_active_runs(self):
+        from git_shadow.edge_agent import EdgeExecutor
+
+        runs = self.state_dir / "cleanup-state" / "runs"
+        for job_id, status, updated_at in (
+            ("job-old", "completed", 1),
+            ("job-new", "failed", 2),
+            ("job-active", "running", 3),
+        ):
+            directory = runs / job_id
+            directory.mkdir(parents=True)
+            (directory / "state.json").write_text(
+                json.dumps({"job_id": job_id, "status": status, "updated_at": updated_at}),
+                encoding="utf-8",
+            )
+
+        executor = EdgeExecutor(str(self.state_dir / "cleanup-state"), max_completed_runs=1)
+        try:
+            self.assertFalse((runs / "job-old").exists())
+            self.assertTrue((runs / "job-new").exists())
+            self.assertTrue((runs / "job-active").exists())
+        finally:
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
 
     def test_runtime_diagnostics_scrub_cloudcli_credentials(self):
         from git_shadow.edge_agent import EdgeExecutor

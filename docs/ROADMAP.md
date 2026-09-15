@@ -99,7 +99,7 @@ Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Wind
 - [x] 常驻 service SSH 断线后自动重连并按 seq 去重/补齐事件
 - [x] CloudCLI Session 已创建但后续失败时广播明确的 partial state
 - [x] 常驻 service 的重复提交、断线重连和幂等 job_id 测试
-- [ ] 任务日志大小上限和清理策略
+- [x] 任务日志大小上限和清理策略
 
 ## 5. P1：本地体验与性能
 

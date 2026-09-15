@@ -20,6 +20,7 @@ import os
 import pathlib
 import re
 import signal
+import shutil
 import stat
 import subprocess
 import sys
@@ -35,6 +36,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 DEFAULT_TTL = 600
+DEFAULT_EVENT_LOG_MAX_BYTES = 4 * 1024 * 1024
+DEFAULT_MAX_COMPLETED_RUNS = 100
 
 
 class EdgeError(RuntimeError):
@@ -125,11 +128,17 @@ def run_checked(
 
 
 class EventJournal:
-    def __init__(self, state_root: pathlib.Path, job_id: str):
+    def __init__(
+        self,
+        state_root: pathlib.Path,
+        job_id: str,
+        max_bytes: int = DEFAULT_EVENT_LOG_MAX_BYTES,
+    ):
         self.directory = state_root / "runs" / job_id
         self.events_path = self.directory / "events.ndjson"
         self.state_path = self.directory / "state.json"
         self.request_path = self.directory / "request.json"
+        self.max_bytes = max(256, int(max_bytes))
         self.directory.mkdir(parents=True, exist_ok=True)
         try:
             os.chmod(self.directory, 0o700)
@@ -174,15 +183,75 @@ class EventJournal:
             self._seq += 1
             payload = {"seq": self._seq, "at": now_iso(), **event}
             persisted = redact(payload)
-            with self.events_path.open("a", encoding="utf-8") as stream:
-                stream.write(json_dump(persisted) + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
+            line = self._bounded_line(persisted)
+            existing = self.events_path.read_bytes() if self.events_path.exists() else b""
+            if len(existing) + len(line) <= self.max_bytes:
+                with self.events_path.open("ab") as stream:
+                    stream.write(line)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            else:
+                retained = []
+                remaining = self.max_bytes - len(line)
+                for old_line in reversed(existing.splitlines(keepends=True)):
+                    if len(old_line) <= remaining:
+                        retained.append(old_line)
+                        remaining -= len(old_line)
+                retained.reverse()
+                temporary = self.events_path.with_suffix(".tmp")
+                with temporary.open("wb") as stream:
+                    stream.writelines(retained)
+                    stream.write(line)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(str(temporary), str(self.events_path))
             try:
                 os.chmod(self.events_path, 0o600)
             except OSError:
                 pass
             return payload
+
+    def _bounded_line(self, persisted: Dict[str, Any]) -> bytes:
+        """Serialize one event without allowing a single output line to evade the cap."""
+        line = (json_dump(persisted) + "\n").encode("utf-8")
+        if len(line) <= self.max_bytes:
+            return line
+
+        compact = dict(persisted)
+        for key in ("message", "error", "detail"):
+            value = compact.get(key)
+            if isinstance(value, str):
+                compact[key] = value[:512] + "... <truncated>"
+        line = (json_dump(compact) + "\n").encode("utf-8")
+        if len(line) <= self.max_bytes:
+            return line
+
+        # Keep the fields needed to identify and order an event if arbitrary
+        # future event data is still larger than the configured journal cap.
+        minimal = {
+            key: compact[key]
+            for key in ("seq", "at", "type", "job_id", "event")
+            if key in compact
+        }
+        minimal["detail"] = "<event payload truncated>"
+        line = (json_dump(minimal) + "\n").encode("utf-8")
+        if len(line) <= self.max_bytes:
+            return line
+        return (json_dump({"seq": compact.get("seq"), "event": compact.get("event")}) + "\n").encode("utf-8")
+
+    def first_seq(self) -> int:
+        if not self.events_path.exists():
+            return 0
+        try:
+            with self.events_path.open("r", encoding="utf-8") as stream:
+                for line in stream:
+                    try:
+                        return int(json.loads(line).get("seq", 0))
+                    except (ValueError, TypeError, json.JSONDecodeError):
+                        continue
+        except OSError:
+            return 0
+        return 0
 
     def replay(self, after_seq: int) -> Iterable[Dict[str, Any]]:
         if not self.events_path.exists():
@@ -203,7 +272,12 @@ class EventJournal:
 
 
 class EdgeExecutor:
-    def __init__(self, state_root: Optional[str] = None):
+    def __init__(
+        self,
+        state_root: Optional[str] = None,
+        max_event_log_bytes: Optional[int] = None,
+        max_completed_runs: Optional[int] = None,
+    ):
         self.home = pathlib.Path.home().resolve()
         self.state_root = ensure_inside(
             state_root or os.environ.get("GIT_SHADOW_STATE_DIR", str(self.home / ".local/share/git-shadow")),
@@ -214,11 +288,75 @@ class EdgeExecutor:
             os.chmod(self.state_root, 0o700)
         except OSError:
             pass
+        self.max_event_log_bytes = self._positive_setting(
+            max_event_log_bytes,
+            "GIT_SHADOW_EVENT_LOG_MAX_BYTES",
+            DEFAULT_EVENT_LOG_MAX_BYTES,
+        )
+        self.max_completed_runs = self._nonnegative_setting(
+            max_completed_runs,
+            "GIT_SHADOW_MAX_COMPLETED_RUNS",
+            DEFAULT_MAX_COMPLETED_RUNS,
+        )
+        self._cleanup_terminal_runs()
         self._write_lock = threading.Lock()
         self._jobs: Dict[str, Dict[str, Any]] = {}
         self._stop = threading.Event()
         self._lease_thread = threading.Thread(target=self._lease_loop, daemon=True)
         self._lease_thread.start()
+
+    @staticmethod
+    def _positive_setting(value: Optional[int], name: str, default: int) -> int:
+        if value is None:
+            try:
+                value = int(os.environ.get(name, default))
+            except (TypeError, ValueError):
+                value = default
+        return max(256, int(value))
+
+    @staticmethod
+    def _nonnegative_setting(value: Optional[int], name: str, default: int) -> int:
+        if value is None:
+            try:
+                value = int(os.environ.get(name, default))
+            except (TypeError, ValueError):
+                value = default
+        return max(0, int(value))
+
+    def _cleanup_terminal_runs(self) -> None:
+        """Retain recent terminal jobs while never deleting active work."""
+        runs_root = self.state_root / "runs"
+        if not runs_root.exists() or self.max_completed_runs < 0:
+            return
+        terminal = []
+        for run_dir in runs_root.iterdir():
+            if not run_dir.is_dir():
+                continue
+            try:
+                state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if state.get("status") not in ("completed", "failed", "interrupted"):
+                continue
+            try:
+                updated_at = state.get("updated_at", 0)
+                try:
+                    updated_order = int(updated_at)
+                except (TypeError, ValueError):
+                    # Edge job states use ISO-8601 while the service state
+                    # uses epoch seconds; filesystem mtime remains a stable
+                    # fallback for the former.
+                    updated_order = 0
+                order = (updated_order, run_dir.stat().st_mtime, run_dir.name)
+            except OSError:
+                continue
+            terminal.append((order, run_dir))
+        terminal.sort(key=lambda item: item[0], reverse=True)
+        for _order, run_dir in terminal[self.max_completed_runs:]:
+            try:
+                shutil.rmtree(str(run_dir))
+            except OSError:
+                continue
 
     def _lease_loop(self) -> None:
         while not self._stop.wait(1.0):
@@ -249,7 +387,7 @@ class EdgeExecutor:
                 data[field] = scrub_text(str(data[field]))
         record = self._jobs.get(job_id)
         if record is None:
-            journal = EventJournal(self.state_root, job_id)
+            journal = EventJournal(self.state_root, job_id, self.max_event_log_bytes)
         else:
             journal = record["journal"]
         payload = journal.append({"type": "event", "job_id": job_id, "event": event, **data})
@@ -264,7 +402,7 @@ class EdgeExecutor:
         if record:
             record["journal"].save_state(state)
         else:
-            EventJournal(self.state_root, job_id).save_state(state)
+            EventJournal(self.state_root, job_id, self.max_event_log_bytes).save_state(state)
         return state
 
     def _validate_cwd(self, value: Optional[str]) -> Optional[pathlib.Path]:
@@ -899,7 +1037,7 @@ class EdgeExecutor:
         if job_id in self._jobs:
             self.emit_control({"type": "accepted", "job_id": job_id, "reused": True})
             return
-        journal = EventJournal(self.state_root, job_id)
+        journal = EventJournal(self.state_root, job_id, self.max_event_log_bytes)
         if journal.state_path.exists():
             try:
                 previous_state = json.loads(journal.state_path.read_text(encoding="utf-8"))
@@ -938,8 +1076,17 @@ class EdgeExecutor:
     def resume(self, message: Dict[str, Any]) -> None:
         job_id = safe_job_id(message.get("job_id"))
         after_seq = int(message.get("after_seq", 0))
-        journal = EventJournal(self.state_root, job_id)
-        self.emit_control({"type": "replay.begin", "job_id": job_id, "after_seq": after_seq})
+        journal = EventJournal(self.state_root, job_id, self.max_event_log_bytes)
+        first_seq = journal.first_seq()
+        self.emit_control(
+            {
+                "type": "replay.begin",
+                "job_id": job_id,
+                "after_seq": after_seq,
+                "first_seq": first_seq,
+                "truncated": bool(first_seq and after_seq < first_seq - 1),
+            }
+        )
         for event in journal.replay(after_seq):
             self.emit_control(event)
         self.emit_control({"type": "replay.end", "job_id": job_id, "last_seq": journal._seq})
@@ -996,10 +1143,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="git-shadow VPS edge executor")
     parser.add_argument("--rpc", action="store_true", help="serve JSONL RPC on stdin/stdout")
     parser.add_argument("--state-dir", default=None)
+    parser.add_argument("--max-event-log-bytes", type=int, default=None)
+    parser.add_argument("--max-completed-runs", type=int, default=None)
     options = parser.parse_args(argv)
     if not options.rpc:
         parser.error("--rpc is required")
-    return EdgeExecutor(options.state_dir).serve()
+    return EdgeExecutor(
+        options.state_dir,
+        max_event_log_bytes=options.max_event_log_bytes,
+        max_completed_runs=options.max_completed_runs,
+    ).serve()
 
 
 if __name__ == "__main__":

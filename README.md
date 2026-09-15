@@ -194,6 +194,12 @@ git shadow service aws-micro unload
 `.gitshadow` 变化并触发双向 CAS 的控制端。服务端不会把本地磁盘变化猜成同步请求。
 常驻服务连接中断时，控制端会用同一 `job_id` 重连并按事件序号去重，不会重复执行同一任务。
 
+边缘执行器默认将每个 Job 的事件日志限制为 4 MiB，并只保留最近 100 个终态
+Job 的运行目录；运行中任务不会被清理。可在 VPS 环境中通过
+`GIT_SHADOW_EVENT_LOG_MAX_BYTES` 和 `GIT_SHADOW_MAX_COMPLETED_RUNS` 调整默认值，
+或在 `edge-agent` / `service-agent` 启动参数中使用同名的 `--max-*` 选项覆盖。
+当日志达到上限时只保留尾部事件，resume 会标记 `truncated`，不会伪造缺失的历史事件。
+
 #### 🔁 Personal continuous development loop (recommended)
 
 For the author's own local-to-VPS workflow, keep this command running while the remote
