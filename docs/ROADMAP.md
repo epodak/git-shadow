@@ -13,6 +13,7 @@
 - [x] Git 代码层、Shadow CAS 层、Native Runtime 层分离
 - [x] 本地 `.gitshadow` 单向 watcher
 - [x] WIP 补丁改为显式 `--wip`
+- [x] 项目级 VPS service-agent：Unix socket、状态、Lease 自毁与 SSH 客户端
 
 ## 1. P0：真实运行闭环
 
@@ -38,13 +39,17 @@
 
 ## 2. P0：VPS 常驻服务治理
 
-- [ ] 新增 VPS 常驻 `git-shadow service-agent`
-- [ ] `service load`：安装、注册项目、初始任务、启动 Lease
-- [ ] `service status`：PID、状态、版本、Lease 剩余时间、最后错误
-- [ ] `service unload`：优雅停止并清理 PID/Lease
-- [ ] Lease 超时自动自毁
-- [ ] 服务与一次性 SSH edge job 共享同一 TypedExecutionPlan
+- [x] 新增 VPS 常驻 `git-shadow service-agent`
+- [x] `service load`：安装、注册项目、启动 Lease
+- [x] `service status`：PID、状态、版本、Lease 剩余时间
+- [x] `service unload`：优雅停止并清理 PID/Lease
+- [x] Lease 超时自动自毁
+- [x] 服务与一次性 SSH edge job 共享同一 TypedExecutionPlan
 - [ ] 服务重启后能从 durable state 恢复，而不是重复覆盖
+
+> 服务端是可恢复的任务承载/执行端，不是本地工作区的磁盘 watcher。要保持双向 Shadow
+> 静默同步，控制端仍需运行 `run ... --watch --service`；本地 watcher 负责发现变化，
+> service-agent 负责在 VPS 上执行 CAS、重放事件和承载断线后的任务状态。
 
 ## 3. P0：Shadow 双向同步
 
@@ -96,7 +101,7 @@
 
 ```text
 P0.1 真实 CloudCLI 测试边界
-P0.2 VPS service load/unload/status
+P0.2 VPS service load/unload/status（已完成基础闭环）
 P0.3 Shadow 双向 pull/conflict
 P1.1 retry/resume/断线重连
 P1.2 原生文件 watcher

@@ -16,6 +16,7 @@ from . import __version__
 from .scanner import RepoState
 from .engine import ShadowEngine
 from .edge import EdgeClient
+from .service import ServiceClient
 from .shadow_sync import ShadowManifestStore
 from .probe import RemoteProbe
 from .auth import AuthManager
@@ -58,12 +59,15 @@ def print_help():
   {Colors.GREEN}pull <host> --with-shadows{Colors.RESET} 同时拉取已登记的远端 .gitshadow 变化
   {Colors.GREEN}edge install <host>{Colors.RESET} 安装/更新 VPS 端 JSONL 边缘执行器
   {Colors.GREEN}edge status <host> <job>{Colors.RESET} 查询远端任务状态
+  {Colors.GREEN}service <host> load|status|unload{Colors.RESET} 管理项目级 VPS 常驻边缘服务
+  {Colors.GREEN}run/push/pull/up ... --service{Colors.RESET} 通过常驻服务提交任务，断开后可恢复
   {Colors.GREEN}run <host> [agent] --watch{Colors.RESET} 仅自动监听并同步 .gitshadow，Git 代码仍走 Git
 
 {Colors.BOLD}选项 (Options):{Colors.RESET}
   {Colors.YELLOW}-d, --dest <dir>{Colors.RESET}    自定义远端存放目录 (默认自动感知: ~/wkspace/项目名 或 ~/workspace/项目名)
   {Colors.YELLOW}--wip{Colors.RESET}               显式把未提交的 Git 修改作为一次性补丁投影；默认不传输
   {Colors.YELLOW}--watch{Colors.RESET}             保持本地进程运行，静默监听 .gitshadow 变化并提交 CAS 任务
+  {Colors.YELLOW}--service{Colors.RESET}           使用 VPS 项目级常驻服务，而非每次新建边缘进程
   {Colors.YELLOW}--pull{Colors.RESET}              远端分支对齐时，强制拉取远端 origin 最新提交
   {Colors.YELLOW}--with-shadows{Colors.RESET}      pull 时额外执行 Shadow 双向 CAS 检查
   {Colors.YELLOW}-a, --agent <cmd>{Colors.RESET}   指定在远端运行的 AI 命令
@@ -268,6 +272,32 @@ def main(args: Optional[List[str]] = None):
         log_error("未知 edge 操作: %s" % edge_action)
         sys.exit(1)
 
+    # 3.6 项目级 VPS 常驻服务治理
+    if subcmd == "service":
+        if len(sub_args) < 2 or sub_args[1] not in ("load", "status", "unload"):
+            log_error("用法: git shadow service <host> load|status|unload")
+            sys.exit(1)
+        service_host, service_action = sub_args[0], sub_args[1]
+        repo = RepoState(".")
+        if not repo.is_git:
+            log_error("service 命令需要在一个有效的 Git 项目目录中执行！")
+            sys.exit(1)
+        service_client = ServiceClient(service_host, repo.root_dir)
+        try:
+            if service_action == "load":
+                if not service_client.ensure_installed():
+                    sys.exit(1)
+                result = service_client.load()
+            elif service_action == "status":
+                result = service_client.status()
+            else:
+                result = service_client.unload()
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            sys.exit(0 if result.get("status") not in ("unreachable", "unknown") else 1)
+        except Exception as exc:
+            log_error("VPS 常驻服务操作失败: %s" % exc)
+            sys.exit(1)
+
     # 其余命令需要解析标准选项
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("host", help="目标远程主机 (SSH Host)")
@@ -276,6 +306,7 @@ def main(args: Optional[List[str]] = None):
     parser.add_argument("--wip", action="store_true", help="显式传输未提交修改（一次性 WIP 补丁）")
     parser.add_argument("--no-wip", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--watch", action="store_true", help="持续监听 .gitshadow 变化")
+    parser.add_argument("--service", action="store_true", help="使用项目级 VPS 常驻服务")
     parser.add_argument("--pull", action="store_true", help="远端强制拉取")
     parser.add_argument("--with-shadows", action="store_true", help="pull 时同步已登记的远端 Shadow 文件")
     parser.add_argument("-a", "--agent", default=None, help="远端 AI Agent 命令")
@@ -305,11 +336,28 @@ def main(args: Optional[List[str]] = None):
         with_wip=with_wip
     )
     shadow_store = ShadowManifestStore(repo.root_dir)
+    service_client: Optional[ServiceClient] = None
+    service_installed = False
+
+    def get_executor_client():
+        nonlocal service_client, service_installed
+        if not opts.service:
+            edge_client = EdgeClient(remote_host)
+            if not edge_client.ensure_installed():
+                raise RuntimeError("VPS 边缘执行器不可用")
+            return edge_client
+        if service_client is None:
+            service_client = ServiceClient(remote_host, repo.root_dir)
+        if not service_installed:
+            if not service_client.ensure_installed():
+                raise RuntimeError("VPS 常驻服务不可用")
+            service_installed = True
+        # Recreates a lease-expired service, and is a no-op for a live one.
+        service_client.load()
+        return service_client
 
     def submit_projection(include_cloudcli: bool = False, provider: Optional[str] = None):
-        edge_client = EdgeClient(remote_host)
-        if not edge_client.ensure_installed():
-            raise RuntimeError("VPS 边缘执行器不可用")
+        edge_client = get_executor_client()
         plan = engine.build_edge_plan(
             provider=provider,
             shadow_files=repo.scan_shadow_files(),
@@ -329,9 +377,7 @@ def main(args: Optional[List[str]] = None):
         return edge_client.submit(plan, on_event=on_event), plan
 
     def submit_shadow_pull():
-        edge_client = EdgeClient(remote_host)
-        if not edge_client.ensure_installed():
-            raise RuntimeError("VPS 边缘执行器不可用")
+        edge_client = get_executor_client()
         plan = engine.build_shadow_pull_plan(
             shadow_files=repo.scan_shadow_files(),
             shadow_store=shadow_store,

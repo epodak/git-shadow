@@ -21,9 +21,9 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 | **一键启动 AI (统一入口)** | `git shadow run <host> [agent]` | **乐观先行**：0 秒弹出浏览器 (Web AI) 或连通终端 (TTY AI)，**后台并发打入代码与影子**，零感知等待 |
 | **数字菜单智能挑选** | `git shadow run <host>` | 自动探查远端已就绪的 AI Agent，呈现数字菜单供一键挑选启动 |
 | **前台随行实时监听** | `git shadow run <host> [agent] --watch` | 范式 A：本地 `.gitshadow` 变化推送、远端变化定期拉取，**终端关闭即自动随行销毁，零残留** |
-| **Linux 后台守护治理** | `git shadow service <host> load` | 范式 B：将增量同步守护挂载到远端 Linux 后台，**带 10 分钟心跳租约超时自毁，彻底释放 VPS 内存** |
+| **Linux 后台服务治理** | `git shadow service <host> load` | 范式 B：将项目级任务执行服务挂载到远端 Linux 后台，**带 10 分钟心跳租约超时自毁，彻底释放 VPS 内存** |
 | **注销 Linux 守护** | `git shadow service <host> unload` | 优雅停止远端 watcher 进程，清除 PID 锁与句柄，100% 归还物理内存 |
-| **检查守护状态** | `git shadow service <host> status` | 查看远端守护进程 PID、运行时间、内存开销与租约剩余秒数 |
+| **检查服务状态** | `git shadow service <host> status` | 查看远端服务 PID、版本、状态与租约剩余秒数 |
 | **环境与工具全景诊断** | `git shadow probe <host>` | 格式化输出远端 OS、架构、主目录、工作区路径（`~/wkspace`）及已安装 AI Agent 版本 |
 | **Git 鉴权与身份治理** | `git shadow auth sync <host>` | 遵循 Diff-First 契约，净化同步本地 SSH 密钥到远端，打通 GitHub 权限并对齐提交人信息 |
 | **投影前本地自检** | `git shadow diff` | 高保真树状图 (Diff Tree) 扫描待投影的私有影子文件与 WIP 代码修改 |
@@ -71,6 +71,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 - CloudCLI 会话必须由同一个远端 Job 明确创建，收到 `session.ready` 后才打开 `/session/<id>`；禁止直接扫描 SQLite 选择“最新会话”。
 - CloudCLI provider 必须在 Session 创建前确定；命令行使用 `--provider`，交互模式使用本地菜单。当前数据库 provider 非空，不创建 provider-neutral 临时 Session。
 - 短任务完成即退出；长期服务继续遵循 600 秒 Lease 心跳和超时自毁契约。
+- `service-agent` 是 VPS 任务承载端，不是本地工作区 watcher；双向 Shadow 自动同步必须由本地 `--watch` 发现变化，再通过服务执行 CAS。
 
 ### 3. `.gitshadow` 显式白名单契约 (No Blackbox)
 - 严禁在底层 Python 代码中硬编码排除黑名单（如私自排除 `_dev_log/`）；
@@ -99,15 +100,18 @@ git shadow run aws cloudcli --provider codex
 # -> 浏览器将自动打开 https://cli.daduiot.com，进入对应工作区
 ```
 
-### 场景 B：长时间脱机开发（范式 B 服务治理）
+### 场景 B：长时间开发（范式 B 服务治理 + 本地 watcher）
 ```bash
 # 加载后台服务到 Linux 治理
 git shadow service aws load
 
+# 本地持续发现并双向提交 .gitshadow 变化
+git shadow run aws cloudcli --provider codex --service --watch
+
 # 查看运行状态与租约倒计时
 git shadow service aws status
 
-# 编码完成或下班前显式注销
+# 编码完成或下班前显式注销；若本地 watcher 失联，远端 Lease 也会自动自毁
 git shadow service aws unload
 ```
 

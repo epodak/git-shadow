@@ -20,6 +20,13 @@ from .utils import log_info, log_success, log_warn
 EventHandler = Callable[[Dict[str, Any]], None]
 
 
+def output_text(value: Any) -> str:
+    """Normalize subprocess output from text and byte upload modes."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value or "")
+
+
 def clean_ssh_args(host: str, remote_command: str) -> List[str]:
     """Build a non-interactive SSH command that ignores hostile SSH config."""
     return [
@@ -69,7 +76,7 @@ class EdgeClient:
         check = self._run_ssh(
             "sha256sum %s 2>/dev/null | awk '{print $1}'" % self.remote_agent_path
         )
-        remote_digest = check.stdout.decode("utf-8", "replace").strip()
+        remote_digest = output_text(check.stdout).strip()
         if remote_digest == local_digest:
             return True
 
@@ -83,7 +90,7 @@ class EdgeClient:
         )
         uploaded = self._run_ssh(command, input_data=payload)
         if uploaded.returncode != 0:
-            message = uploaded.stderr.decode("utf-8", "replace").strip()
+            message = output_text(uploaded.stderr).strip()
             log_warn("VPS 边缘执行器安装失败: %s" % (message or "SSH transfer failed"))
             return False
         log_success("VPS 边缘执行器已就绪")
