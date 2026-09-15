@@ -45,7 +45,7 @@
 - [x] `service unload`：优雅停止并清理 PID/Lease
 - [x] Lease 超时自动自毁
 - [x] 服务与一次性 SSH edge job 共享同一 TypedExecutionPlan
-- [ ] 服务重启后能从 durable state 恢复，而不是重复覆盖
+- [x] 服务重启后重放 terminal durable state；未完成任务标记 `interrupted`，不重复覆盖
 
 > 服务端是可恢复的任务承载/执行端，不是本地工作区的磁盘 watcher。要保持双向 Shadow
 > 静默同步，控制端仍需运行 `run ... --watch --service`；本地 watcher 负责发现变化，

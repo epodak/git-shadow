@@ -80,6 +80,45 @@ class ServiceRuntime:
             self.subscribers,
             self.subscriber_lock,
         ).instance
+        self._reconcile_interrupted_jobs()
+
+    def _reconcile_interrupted_jobs(self) -> None:
+        """Turn in-flight jobs into explicit failures after a service restart.
+
+        Requests are deliberately redacted on disk, so silently replaying a
+        Shadow payload after a crash would be unsafe and could duplicate a
+        CloudCLI Session.  Preserve the journal and make the interruption
+        visible instead; the local controller can submit a deliberate retry.
+        """
+        runs_root = self.state_root / "runs"
+        if not runs_root.exists():
+            return
+        for run_dir in sorted(runs_root.iterdir()):
+            if not run_dir.is_dir():
+                continue
+            state_path = run_dir / "state.json"
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if state.get("status") not in ("accepted", "running"):
+                continue
+            job_id = run_dir.name
+            journal = self.module.EventJournal(self.state_root, job_id)
+            terminal = [event for event in journal.replay(0) if event.get("event") in ("job.completed", "job.failed")]
+            if terminal:
+                continue
+            error = "service restarted before job completed"
+            self.executor.emit_event(job_id, "job.failed", error=error, interrupted=True)
+            state.update(
+                {
+                    "status": "interrupted",
+                    "error": error,
+                    "interrupted": True,
+                    "updated_at": self.module.now_iso(),
+                }
+            )
+            journal.save_state(state)
 
     def _save_state(self, status: str, **data: Any) -> None:
         if status == "running":

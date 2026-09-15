@@ -769,6 +769,21 @@ class EdgeExecutor:
             self.emit_control({"type": "accepted", "job_id": job_id, "reused": True})
             return
         journal = EventJournal(self.state_root, job_id)
+        if journal.state_path.exists():
+            try:
+                previous_state = json.loads(journal.state_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                previous_state = {}
+            if previous_state.get("status") in ("completed", "failed", "interrupted"):
+                self.emit_control(
+                    {
+                        "type": "accepted",
+                        "job_id": job_id,
+                        "reused": True,
+                        "status": previous_state.get("status"),
+                    }
+                )
+                return
         journal.save_request(request)
         lease_ttl = max(1, int(request.get("lease_ttl", DEFAULT_TTL)))
         lease_path = journal.directory / "lease"

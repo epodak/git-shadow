@@ -156,6 +156,46 @@ class TestServiceAgent(unittest.TestCase):
             if process.stderr:
                 process.stderr.close()
 
+    def test_service_restart_replays_terminal_job_without_rerunning_it(self):
+        process = self._start()
+        request = {
+            "type": "submit",
+            "job_id": "job-service-restart",
+            "steps": [
+                {
+                    "id": "output",
+                    "action": "exec",
+                    "argv": [sys.executable, "-c", "print('terminal-once')"],
+                    "cwd": str(self.workspace),
+                }
+            ],
+        }
+        try:
+            first_events = self._send(request)
+            self.assertTrue(any(item.get("event") == "job.completed" for item in first_events))
+            process.terminate()
+            process.wait(timeout=5)
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+
+            process = self._start()
+            replayed_events = self._send(request)
+            self.assertTrue(any(item.get("event") == "job.completed" for item in replayed_events))
+            journal = self.state_root / "runs" / "job-service-restart" / "events.ndjson"
+            persisted = [json.loads(line) for line in journal.read_text().splitlines()]
+            self.assertEqual(sum(item.get("event") == "job.started" for item in persisted), 1)
+            self.assertEqual(sum(item.get("event") == "output" and item.get("message") == "terminal-once" for item in persisted), 1)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+
 
 if __name__ == "__main__":
     unittest.main()
