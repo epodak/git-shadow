@@ -275,6 +275,38 @@ class ShadowEngine:
 
         return {"protocol": 1, "project_path": target_dir, "provider": provider, "steps": steps}
 
+    def build_shadow_pull_plan(
+        self,
+        shadow_files: Optional[List[str]] = None,
+        shadow_store: Optional[ShadowManifestStore] = None,
+    ) -> Dict[str, Any]:
+        """Build a remote-to-local Shadow inspection task.
+
+        The VPS never writes local files. It emits remote changes over the
+        live SSH stream, and the local manifest store decides whether to apply
+        or preserve them as conflicts.
+        """
+        target_dir = self.resolve_remote_dir()
+        files = shadow_files if shadow_files is not None else self.repo.scan_shadow_files()
+        manifest = shadow_store or ShadowManifestStore(self.repo.root_dir)
+        return {
+            "protocol": 1,
+            "project_path": target_dir,
+            "steps": [
+                {
+                    "id": "workspace.create",
+                    "action": "workspace.create",
+                    "target": target_dir,
+                },
+                {
+                    "id": "shadow.pull",
+                    "action": "shadow.pull",
+                    "target": target_dir,
+                    "entries": manifest.build_pull_entries(files),
+                },
+            ],
+        }
+
     def open_cloudcli_optimistic(self, domain: str = "cli.daduiot.com") -> str:
         """乐观先行：0秒立即拉起本地浏览器打开 CloudCLI，绝不让用户在终端黑框中空转干等"""
         base_url = f"https://{domain}"

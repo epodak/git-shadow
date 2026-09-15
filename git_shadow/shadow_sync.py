@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 from typing import Any, Dict, Iterable, List, Optional
 
 
@@ -84,18 +85,110 @@ class ShadowManifestStore:
             )
         return entries
 
+    def build_pull_entries(self, shadow_files: Iterable[str]) -> List[Dict[str, Any]]:
+        """Build a pull request for current files plus previously known paths."""
+        paths = set(shadow_files)
+        paths.update(str(path) for path in self._data["files"])
+        entries: List[Dict[str, Any]] = []
+        for relative_path in sorted(paths):
+            path = self.project_root / relative_path
+            local_hash = sha256_file(path) if path.is_file() else None
+            entries.append(
+                {
+                    "path": relative_path,
+                    "base_hash": self.base_hash(relative_path),
+                    "local_hash": local_hash,
+                }
+            )
+        return entries
+
     def consume_event(self, event: Dict[str, Any]) -> None:
         """Advance local acknowledgement state only after remote CAS success."""
-        if event.get("event") != "shadow.applied":
-            return
+        event_type = event.get("event")
+        if event_type == "shadow.applied":
+            self._consume_applied(event)
+        elif event_type == "shadow.remote":
+            self._consume_remote(event)
+        elif event_type == "shadow.conflict":
+            self._save_remote_conflict(event)
+
+    def _consume_applied(self, event: Dict[str, Any]) -> None:
         relative_path = str(event.get("path") or "")
         local_hash = str(event.get("local_hash") or "")
         if not relative_path or not local_hash:
             return
+
         self._data["files"][relative_path] = {
             "synced_hash": local_hash,
             "updated_at": event.get("at"),
         }
+        self._save()
+
+    def _local_path(self, relative_path: str) -> pathlib.Path:
+        candidate = pathlib.PurePosixPath(relative_path)
+        if not relative_path or candidate.is_absolute() or ".." in candidate.parts:
+            raise ValueError("unsafe local shadow path")
+        destination = (self.project_root / pathlib.Path(*candidate.parts)).resolve(strict=False)
+        try:
+            destination.relative_to(self.project_root)
+        except ValueError as exc:
+            raise ValueError("local shadow path escapes project") from exc
+        return destination
+
+    @staticmethod
+    def _atomic_write(path: pathlib.Path, payload: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(".%s.git-shadow-local-%s.tmp" % (path.name, os.getpid()))
+        try:
+            with temporary.open("wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(str(temporary), str(path))
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _consume_remote(self, event: Dict[str, Any]) -> None:
+        relative_path = str(event.get("path") or "")
+        remote_hash = str(event.get("remote_hash") or "")
+        destination = self._local_path(relative_path)
+        if event.get("deleted"):
+            try:
+                destination.unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            encoded = event.get("content_b64")
+            if not isinstance(encoded, str):
+                return
+            payload = base64.b64decode(encoded, validate=True)
+            if sha256_bytes(payload) != remote_hash:
+                raise ValueError("remote shadow hash does not match content")
+            self._atomic_write(destination, payload)
+        self._data["files"][relative_path] = {
+            "synced_hash": None if event.get("deleted") else remote_hash,
+            "updated_at": event.get("at"),
+        }
+        self._save()
+
+    def _save_remote_conflict(self, event: Dict[str, Any]) -> None:
+        encoded = event.get("content_b64")
+        if not isinstance(encoded, str):
+            return
+        relative_path = str(event.get("path") or "")
+        payload = base64.b64decode(encoded, validate=True)
+        remote_hash = str(event.get("remote_hash") or "")
+        if sha256_bytes(payload) != remote_hash:
+            raise ValueError("remote conflict hash does not match content")
+        job_id = re.sub(r"[^A-Za-z0-9_.:-]", "_", str(event.get("job_id") or "job"))
+        candidate = pathlib.PurePosixPath(relative_path)
+        if not relative_path or candidate.is_absolute() or ".." in candidate.parts:
+            raise ValueError("unsafe remote conflict path")
+        conflict_path = self.state_root / "conflicts" / project_key(str(self.project_root)) / job_id / pathlib.Path(*candidate.parts)
+        self._atomic_write(conflict_path, payload)
         self._save()
 
     def _save(self) -> None:

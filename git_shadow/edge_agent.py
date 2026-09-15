@@ -148,8 +148,9 @@ class EventJournal:
         with self._lock:
             self._seq += 1
             payload = {"seq": self._seq, "at": now_iso(), **event}
+            persisted = redact(payload)
             with self.events_path.open("a", encoding="utf-8") as stream:
-                stream.write(json_dump(payload) + "\n")
+                stream.write(json_dump(persisted) + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
             return payload
@@ -533,6 +534,66 @@ class EdgeExecutor:
             finally:
                 fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
 
+    def _shadow_pull(self, job_id: str, step: Dict[str, Any]) -> Dict[str, Any]:
+        """Return remote Shadow changes without overwriting local state blindly."""
+        target = ensure_inside(str(step.get("target") or ""), self.home)
+        entries = step.get("entries")
+        if not isinstance(entries, list):
+            raise EdgeError("shadow.pull requires an entries array")
+        lock_path = self._shadow_manifest_path(target).with_suffix(".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        changed = 0
+        conflicts: List[str] = []
+        with lock_path.open("a+", encoding="utf-8") as lock_stream:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+            try:
+                for raw_entry in entries:
+                    if not isinstance(raw_entry, dict):
+                        raise EdgeError("shadow pull entry must be an object")
+                    relative, destination = self._shadow_relative_path(target, raw_entry.get("path"))
+                    base_hash = raw_entry.get("base_hash") or None
+                    local_hash = raw_entry.get("local_hash") or None
+                    remote_hash = self._file_hash(destination)
+                    if remote_hash == local_hash or remote_hash == base_hash:
+                        continue
+
+                    payload = destination.read_bytes() if remote_hash is not None else b""
+                    if local_hash == base_hash:
+                        self.emit_event(
+                            job_id,
+                            "shadow.remote",
+                            path=relative,
+                            remote_hash=remote_hash or "",
+                            deleted=remote_hash is None,
+                            content_b64="" if remote_hash is None else base64.b64encode(payload).decode("ascii"),
+                        )
+                        changed += 1
+                    else:
+                        target_key = hashlib.sha256(str(target).encode("utf-8")).hexdigest()[:32]
+                        conflict_path = self.state_root / "conflicts" / target_key / safe_job_id(job_id) / pathlib.Path(*relative.split("/"))
+                        if remote_hash is not None:
+                            self._atomic_write(conflict_path, payload)
+                        else:
+                            self._atomic_write(conflict_path, b"git-shadow remote deletion conflict\n")
+                        self.emit_event(
+                            job_id,
+                            "shadow.conflict",
+                            path=relative,
+                            base_hash=base_hash,
+                            local_hash=local_hash or "",
+                            remote_hash=remote_hash or "",
+                            deleted=remote_hash is None,
+                            content_b64="" if remote_hash is None else base64.b64encode(payload).decode("ascii"),
+                            conflict_path=str(conflict_path),
+                            direction="remote-to-local",
+                        )
+                        conflicts.append(relative)
+            finally:
+                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+        if conflicts:
+            raise EdgeError("shadow pull conflict: %s" % ", ".join(conflicts))
+        return {"changed": changed, "conflicts": 0}
+
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         bearer = os.environ.get("GIT_SHADOW_CLOUDCLI_TOKEN", "").strip()
@@ -609,6 +670,8 @@ class EdgeExecutor:
             return {}
         if action == "shadow.sync":
             return self._shadow_sync(job_id, step)
+        if action == "shadow.pull":
+            return self._shadow_pull(job_id, step)
         if action == "patch.apply":
             self._apply_patch(step)
             return {}

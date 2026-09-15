@@ -55,6 +55,7 @@ def print_help():
   {Colors.GREEN}push <host>{Colors.RESET}         通过边缘任务对齐 Git 基线并执行 .gitshadow CAS，不进入终端
   {Colors.GREEN}diff{Colors.RESET}                本地自检：以高保真树状图 (Diff Tree) 预览待投影的影子文件与代码改动
   {Colors.GREEN}pull <host>{Colors.RESET}         从远端对齐拉取最新 Git 代码到本地
+  {Colors.GREEN}pull <host> --with-shadows{Colors.RESET} 同时拉取已登记的远端 .gitshadow 变化
   {Colors.GREEN}edge install <host>{Colors.RESET} 安装/更新 VPS 端 JSONL 边缘执行器
   {Colors.GREEN}edge status <host> <job>{Colors.RESET} 查询远端任务状态
   {Colors.GREEN}run <host> [agent] --watch{Colors.RESET} 仅自动监听并同步 .gitshadow，Git 代码仍走 Git
@@ -64,6 +65,7 @@ def print_help():
   {Colors.YELLOW}--wip{Colors.RESET}               显式把未提交的 Git 修改作为一次性补丁投影；默认不传输
   {Colors.YELLOW}--watch{Colors.RESET}             保持本地进程运行，静默监听 .gitshadow 变化并提交 CAS 任务
   {Colors.YELLOW}--pull{Colors.RESET}              远端分支对齐时，强制拉取远端 origin 最新提交
+  {Colors.YELLOW}--with-shadows{Colors.RESET}      pull 时额外执行 Shadow 双向 CAS 检查
   {Colors.YELLOW}-a, --agent <cmd>{Colors.RESET}   指定在远端运行的 AI 命令
   {Colors.YELLOW}--provider <name>{Colors.RESET}   CloudCLI 供应商 (codex/claude/cursor/opencode)
   {Colors.YELLOW}--cloudcli-url <url>{Colors.RESET} VPS 内部 CloudCLI 地址 (默认 http://127.0.0.1:3001)
@@ -273,6 +275,7 @@ def main(args: Optional[List[str]] = None):
     parser.add_argument("--no-wip", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--watch", action="store_true", help="持续监听 .gitshadow 变化")
     parser.add_argument("--pull", action="store_true", help="远端强制拉取")
+    parser.add_argument("--with-shadows", action="store_true", help="pull 时同步已登记的远端 Shadow 文件")
     parser.add_argument("-a", "--agent", default=None, help="远端 AI Agent 命令")
     parser.add_argument("--provider", default=None, help="CloudCLI AI 供应商: codex/claude/cursor/opencode")
     parser.add_argument("--cloudcli-url", default=None, help="VPS 内部 CloudCLI 地址，默认读取 GIT_SHADOW_CLOUDCLI_BASE_URL")
@@ -313,6 +316,22 @@ def main(args: Optional[List[str]] = None):
             cloudcli_base_url=opts.cloudcli_url,
             include_wip=with_wip,
             include_cloudcli=include_cloudcli,
+            shadow_store=shadow_store,
+        )
+        plan["job_id"] = edge_client.new_job_id()
+
+        def on_event(event: dict) -> None:
+            print_edge_event(event)
+            shadow_store.consume_event(event)
+
+        return edge_client.submit(plan, on_event=on_event), plan
+
+    def submit_shadow_pull():
+        edge_client = EdgeClient(remote_host)
+        if not edge_client.ensure_installed():
+            raise RuntimeError("VPS 边缘执行器不可用")
+        plan = engine.build_shadow_pull_plan(
+            shadow_files=repo.scan_shadow_files(),
             shadow_store=shadow_store,
         )
         plan["job_id"] = edge_client.new_job_id()
@@ -481,7 +500,15 @@ def main(args: Optional[List[str]] = None):
     elif subcmd == "pull":
         log_info("正在从远端 Git 仓库拉取最新提交到本地...")
         import subprocess
-        subprocess.run(["git", "pull"])
+        result = subprocess.run(["git", "pull"])
+        if result.returncode != 0:
+            sys.exit(result.returncode)
+        if opts.with_shadows:
+            try:
+                submit_shadow_pull()
+            except Exception as exc:
+                log_error("远端 Shadow 拉取失败: %s" % exc)
+                sys.exit(1)
 
     else:
         log_error(f"未知子命令: {subcmd}")
