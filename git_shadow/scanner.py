@@ -42,8 +42,8 @@ class RepoState:
         self.root_dir = os.path.abspath(root_dir)
         self.is_git = False
         self.remote_url = ""
-        self.repo_name = ""
-        self.branch = ""
+        self.repo_name = os.path.basename(self.root_dir.rstrip(os.sep)) or "project"
+        self.branch = "main"
         self.commit = ""
         self.is_dirty = False
         self.ignored_files: List[str] = []
@@ -90,25 +90,33 @@ class RepoState:
 
     def scan_shadow_files(self, include_untracked: bool = True) -> List[str]:
         """依据 .gitshadow 契约扫描所有符合条件的影子文件"""
-        if not self.is_git:
-            return []
-
-        # 1. 获取被 .gitignore 忽略的所有候选文件
-        code, ignored_out, _ = run_cmd(
-            ["git", "ls-files", "-o", "-i", "--exclude-standard"],
-            cwd=self.root_dir,
-            check=False
-        )
-        raw_ignored = [f.strip() for f in ignored_out.splitlines() if f.strip()]
-
-        raw_untracked = []
-        if include_untracked:
-            code, untracked_out, _ = run_cmd(
-                ["git", "ls-files", "-o", "--exclude-standard"],
+        # Git projects use Git's ignored/untracked inventory. A plain folder
+        # has no Git index, so walk only the explicit Shadow patterns instead.
+        if self.is_git:
+            code, ignored_out, _ = run_cmd(
+                ["git", "ls-files", "-o", "-i", "--exclude-standard"],
                 cwd=self.root_dir,
                 check=False
             )
-            raw_untracked = [f.strip() for f in untracked_out.splitlines() if f.strip()]
+            raw_ignored = [f.strip() for f in ignored_out.splitlines() if f.strip()]
+            raw_untracked = []
+            if include_untracked:
+                code, untracked_out, _ = run_cmd(
+                    ["git", "ls-files", "-o", "--exclude-standard"],
+                    cwd=self.root_dir,
+                    check=False
+                )
+                raw_untracked = [f.strip() for f in untracked_out.splitlines() if f.strip()]
+        else:
+            raw_ignored = []
+            raw_untracked = []
+            skip_dirs = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next"}
+            for current_root, directories, filenames in os.walk(self.root_dir):
+                directories[:] = [name for name in directories if name not in skip_dirs]
+                for filename in filenames:
+                    full_path = os.path.join(current_root, filename)
+                    relative = os.path.relpath(full_path, self.root_dir)
+                    raw_untracked.append(relative.replace(os.sep, "/"))
 
         all_candidates = list(dict.fromkeys(raw_ignored + raw_untracked))
 

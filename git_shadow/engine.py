@@ -219,8 +219,9 @@ class ShadowEngine:
             "branch": self.repo.branch or "main",
             "commit": self.repo.commit,
             "pull": sync_git_pull,
+            "git_enabled": bool(getattr(self.repo, "is_git", True) or self.repo.remote_url),
         }
-        if not self.repo.remote_url:
+        if not self.repo.remote_url and getattr(self.repo, "is_git", True):
             archive_proc = subprocess.run(
                 ["git", "archive", "HEAD"],
                 cwd=self.repo.root_dir,

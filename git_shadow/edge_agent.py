@@ -370,8 +370,8 @@ class EdgeExecutor:
         remote_url = str(step.get("remote_url") or "").strip()
         branch = str(step.get("branch") or "main")
         pull = bool(step.get("pull"))
+        git_enabled = bool(step.get("git_enabled", True))
         target.parent.mkdir(parents=True, exist_ok=True)
-        preexisting_key = str(target)
         preexisting = self._snapshot_workspace(target) if target.exists() and not (target / ".git").exists() else []
 
         if remote_url:
@@ -405,6 +405,9 @@ class EdgeExecutor:
             return
 
         target.mkdir(parents=True, exist_ok=True)
+        if not git_enabled:
+            self._restore_workspace(target, preexisting)
+            return
         if not (target / ".git").exists():
             try:
                 run_checked(["git", "init", "-b", branch], cwd=target)

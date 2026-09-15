@@ -214,9 +214,6 @@ def main(args: Optional[List[str]] = None):
     # 1. 本地自检 diff
     if subcmd == "diff":
         repo = RepoState(".")
-        if not repo.is_git:
-            log_error("当前目录不是一个有效的 Git 仓库！")
-            sys.exit(1)
         cmd_diff(repo)
         sys.exit(0)
 
@@ -250,6 +247,9 @@ def main(args: Optional[List[str]] = None):
                 spec_key = sub_args[k_idx + 1]
 
         repo = RepoState(".")
+        if not repo.is_git:
+            log_error("auth sync 需要在一个有效的 Git 仓库中执行！")
+            sys.exit(1)
         engine = ShadowEngine(repo=repo, remote_host=target_host)
         mgr = AuthManager(engine, specified_key=spec_key)
         success = mgr.sync_to_remote()
@@ -301,9 +301,6 @@ def main(args: Optional[List[str]] = None):
             sys.exit(1)
         service_host, service_action = sub_args[0], sub_args[1]
         repo = RepoState(".")
-        if not repo.is_git:
-            log_error("service 命令需要在一个有效的 Git 项目目录中执行！")
-            sys.exit(1)
         service_client = ServiceClient(service_host, repo.root_dir)
         try:
             if service_action == "load":
@@ -344,8 +341,9 @@ def main(args: Optional[List[str]] = None):
 
     repo = RepoState(".")
     if not repo.is_git:
-        log_error("当前目录不是一个有效的 Git 仓库！")
-        sys.exit(1)
+        if subcmd not in ("run", "push", "up", "pull", "web"):
+            log_error("当前命令需要一个有效的 Git 仓库；run/push/up/pull 可用于普通文件夹。")
+            sys.exit(1)
 
     remote_host = opts.host
     remote_dir = opts.dest
@@ -594,11 +592,15 @@ def main(args: Optional[List[str]] = None):
 
     # 8. pull 命令：本地拉取
     elif subcmd == "pull":
-        log_info("正在从远端 Git 仓库拉取最新提交到本地...")
-        import subprocess
-        result = subprocess.run(["git", "pull"])
-        if result.returncode != 0:
-            sys.exit(result.returncode)
+        if repo.is_git:
+            log_info("正在从远端 Git 仓库拉取最新提交到本地...")
+            import subprocess
+            result = subprocess.run(["git", "pull"])
+            if result.returncode != 0:
+                sys.exit(result.returncode)
+        elif not opts.with_shadows:
+            log_error("普通文件夹没有 Git lane；如需拉取 Shadow，请追加 --with-shadows。")
+            sys.exit(1)
         if opts.with_shadows:
             try:
                 submit_shadow_pull()

@@ -11,6 +11,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 3. **重型依赖走原生**（远端 Linux 宿主原生安装，绝不跨平台对拷）。
 
 分层同步的硬边界：Git 追踪文件只交给 Git；`.gitshadow` 文件只交给 Shadow Manifest/CAS；未提交追踪文件默认不同步，只有显式 `--wip` 才作为一次性补丁投影。
+普通文件夹也可以创建 CloudCLI Session 和远端空工作区；仅 Git lane（Git pull、auth sync）要求当前目录已有 Git 仓库。
 
 ---
 

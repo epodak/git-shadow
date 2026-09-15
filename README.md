@@ -123,6 +123,15 @@ One command will:
 git shadow run aws-micro opencode
 ```
 
+The current folder does not have to be a Git repository for a CloudCLI/Shadow
+workspace. Git operations remain available when an origin exists; a plain
+folder can still open a Session and prepare a remote directory:
+
+```bash
+cd /path/to/empty-folder
+git shadow run aws-micro cloudcli --provider codex
+```
+
 #### 🌐 Batch the remote projection through the VPS edge executor
 
 For CloudCLI, `git-shadow` uploads a standalone VPS executor, submits one
