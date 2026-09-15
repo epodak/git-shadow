@@ -362,9 +362,20 @@ def main(args: Optional[List[str]] = None):
         remote_dir=remote_dir,
         with_wip=with_wip
     )
-    shadow_store = ShadowManifestStore(repo.root_dir)
+    shadow_store: Optional[ShadowManifestStore] = None
     service_client: Optional[ServiceClient] = None
     service_installed = False
+
+    def get_shadow_store() -> ShadowManifestStore:
+        """Keep Shadow acknowledgement state independent per remote target."""
+        nonlocal shadow_store
+        if shadow_store is None:
+            target_dir = engine.resolve_remote_dir()
+            shadow_store = ShadowManifestStore(
+                repo.root_dir,
+                remote_scope=remote_host + "\n" + target_dir,
+            )
+        return shadow_store
 
     def get_executor_client():
         nonlocal service_client, service_installed
@@ -394,13 +405,13 @@ def main(args: Optional[List[str]] = None):
             cloudcli_token=os.environ.get("GIT_SHADOW_CLOUDCLI_TOKEN", "").strip() or None,
             include_wip=with_wip,
             include_cloudcli=include_cloudcli,
-            shadow_store=shadow_store,
+            shadow_store=get_shadow_store(),
         )
         plan["job_id"] = edge_client.new_job_id()
 
         def on_event(event: dict) -> None:
             print_edge_event(event)
-            shadow_store.consume_event(event)
+            get_shadow_store().consume_event(event)
 
         return edge_client.submit(plan, on_event=on_event), plan
 
@@ -408,7 +419,7 @@ def main(args: Optional[List[str]] = None):
         edge_client = get_executor_client()
         plan = engine.build_shadow_pull_plan(
             shadow_files=repo.scan_shadow_files(),
-            shadow_store=shadow_store,
+            shadow_store=get_shadow_store(),
         )
         plan["job_id"] = edge_client.new_job_id()
 
@@ -418,7 +429,7 @@ def main(args: Optional[List[str]] = None):
             print_edge_event(event)
             if event.get("event") == "shadow.remote" and event.get("replay_redacted"):
                 replay_redacted["value"] = True
-            shadow_store.consume_event(event)
+            get_shadow_store().consume_event(event)
 
         result = edge_client.submit(plan, on_event=on_event)
         if replay_redacted["value"] and not refresh_attempt:

@@ -32,6 +32,11 @@ def project_key(project_root: str) -> str:
     return sha256_bytes(str(pathlib.Path(project_root).resolve()).encode("utf-8"))[:32]
 
 
+def scope_key(scope: str) -> str:
+    """Return a stable identifier for a remote Shadow target scope."""
+    return sha256_bytes(str(scope).encode("utf-8"))[:32]
+
+
 class ShadowManifestStore:
     """Local acknowledgement state for the .gitshadow lane.
 
@@ -39,13 +44,17 @@ class ShadowManifestStore:
     the working tree and are sent in the current job request over SSH.
     """
 
-    def __init__(self, project_root: str, state_root: Optional[str] = None):
+    def __init__(self, project_root: str, state_root: Optional[str] = None, remote_scope: Optional[str] = None):
         self.project_root = pathlib.Path(project_root).resolve()
+        self.remote_scope = str(remote_scope).strip() if remote_scope else None
         default_root = pathlib.Path.home() / ".local/state/git-shadow"
         self.state_root = pathlib.Path(
             state_root or os.environ.get("GIT_SHADOW_LOCAL_STATE_DIR", str(default_root))
         ).expanduser()
-        self.path = self.state_root / "shadows" / (project_key(str(self.project_root)) + ".json")
+        state_key = project_key(str(self.project_root))
+        if self.remote_scope:
+            state_key += "-" + scope_key(self.remote_scope)
+        self.path = self.state_root / "shadows" / (state_key + ".json")
         self._data = self._load()
 
     def _load(self) -> Dict[str, Any]:
@@ -58,7 +67,12 @@ class ShadowManifestStore:
         files = value.get("files")
         if not isinstance(files, dict):
             files = {}
-        return {"version": 1, "project_root": str(self.project_root), "files": files}
+        return {
+            "version": 1,
+            "project_root": str(self.project_root),
+            "remote_scope": self.remote_scope,
+            "files": files,
+        }
 
     def base_hash(self, relative_path: str) -> Optional[str]:
         record = self._data["files"].get(relative_path)
@@ -200,7 +214,10 @@ class ShadowManifestStore:
         candidate = pathlib.PurePosixPath(relative_path)
         if not relative_path or candidate.is_absolute() or ".." in candidate.parts:
             raise ValueError("unsafe remote conflict path")
-        conflict_path = self.state_root / "conflicts" / project_key(str(self.project_root)) / job_id / pathlib.Path(*candidate.parts)
+        conflict_key = project_key(str(self.project_root))
+        if self.remote_scope:
+            conflict_key += "-" + scope_key(self.remote_scope)
+        conflict_path = self.state_root / "conflicts" / conflict_key / job_id / pathlib.Path(*candidate.parts)
         self._atomic_write(conflict_path, payload)
         self._save()
 

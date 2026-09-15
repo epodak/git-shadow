@@ -7,7 +7,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 
 `git-shadow` 当前个人模式是“跨平台本地控制端 → Linux VPS 远端执行端”的极速流式投影工具。它遵循**三态隔离公理**：
 1. **公有代码走 Git**（远端骨干网直接 clone/fetch 或本地 P2P 流式推送）；
-2. **私有配置走影子**（受 `.gitignore` 与 `.gitshadow` 保护的敏感文件通过 Manifest/CAS 原子投影，禁止静默覆盖另一端修改）；
+2. **私有配置走影子**（受 `.gitignore` 与 `.gitshadow` 保护的敏感文件通过按远端目标隔离的 Manifest/CAS 原子投影，禁止静默覆盖另一端修改）；
 3. **重型依赖走原生**（远端 Linux 宿主原生安装，绝不跨平台对拷）。
 
 分层同步的硬边界：Git 追踪文件只交给 Git；`.gitshadow` 文件只交给 Shadow Manifest/CAS；未提交追踪文件默认不同步，只有显式 `--wip` 才作为一次性补丁投影。

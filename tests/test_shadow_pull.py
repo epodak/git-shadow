@@ -170,6 +170,30 @@ class TestShadowPull(unittest.TestCase):
             executor._stop.set()
             executor._lease_thread.join(timeout=2)
 
+    def test_remote_target_scopes_do_not_share_acknowledgement_baselines(self):
+        project = self.root / "scoped-project"
+        project.mkdir()
+        secret = project / ".env"
+        secret.write_text("private-value\n", encoding="utf-8")
+        state_root = self.root / "scoped-state"
+        first = ShadowManifestStore(
+            str(project),
+            state_root=str(state_root),
+            remote_scope="host-a\n/home/a/project",
+        )
+        second = ShadowManifestStore(
+            str(project),
+            state_root=str(state_root),
+            remote_scope="host-a\n/home/b/project",
+        )
+
+        entries = first.build_entries([".env"])
+        first.consume_event({"event": "shadow.applied", "path": ".env", "local_hash": entries[0]["local_hash"]})
+
+        self.assertEqual(first.base_hash(".env"), entries[0]["local_hash"])
+        self.assertIsNone(second.base_hash(".env"))
+        self.assertNotEqual(first.path, second.path)
+
     def test_pull_plan_contains_workspace_creation_and_shadow_pull(self):
         from git_shadow.engine import ShadowEngine
 

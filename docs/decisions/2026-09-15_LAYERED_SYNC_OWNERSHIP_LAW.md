@@ -51,6 +51,7 @@ remote_hash == base_hash        -> fsync + 原子替换/删除
 冲突不得覆盖远端文件。由于 CloudCLI 可以在项目目录创建后立即启动，CAS 冲突可能发生在 Session 已经打开之后；此时必须广播失败、停止后续任务并禁止重复创建 Session。成功的 `shadow.applied` 事件才会推进本地 Manifest 的 `synced_hash`；失败或断线不能伪造同步确认。
 
 Manifest 只保存路径和哈希，不保存密钥内容。目标文件使用同目录临时文件、`fsync` 和 `os.replace`，避免半写入状态被另一端读取。
+本地 acknowledgement Manifest 的作用域是 `本地项目路径 + 远端主机 + 远端工作区`；同一项目切换 VPS 或目标目录时必须使用独立基线，不能把一个远端的哈希当成另一个远端的 CAS 基线。旧版未带远端作用域的状态仍可读取，但新 CLI 投影会建立作用域隔离的状态文件。
 
 ### 2.3 NativeRuntimeLane：依赖不进入同步协议
 
