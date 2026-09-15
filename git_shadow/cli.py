@@ -24,6 +24,7 @@ from .install import install_wrappers
 from .probe import RemoteProbe
 from .auth import AuthManager
 from .tree import DiffTreeRenderer
+from .git_sync import auto_fast_forward_pull
 from .utils import (
     log_info,
     log_success,
@@ -65,12 +66,14 @@ def print_help():
   {Colors.GREEN}install [dir]{Colors.RESET}     安装本地 git-shadow / git-shadow.cmd wrapper（默认 ~/.local/bin）
   {Colors.GREEN}service <host> load|status|unload{Colors.RESET} 管理项目级 VPS 常驻边缘服务
   {Colors.GREEN}run/push/pull/up ... --service{Colors.RESET} 通过常驻服务提交任务，断开后可恢复
-  {Colors.GREEN}run <host> [agent] --watch{Colors.RESET} 仅自动监听并同步 .gitshadow，Git 代码仍走 Git
+  {Colors.GREEN}run <host> [agent] --watch{Colors.RESET} 持续双向同步 .gitshadow，并对干净 Git 分支自动 ff-only 拉取
 
 {Colors.BOLD}选项 (Options):{Colors.RESET}
   {Colors.YELLOW}-d, --dest <dir>{Colors.RESET}    自定义远端存放目录 (默认自动感知: ~/wkspace/项目名 或 ~/workspace/项目名)
   {Colors.YELLOW}--wip{Colors.RESET}               显式把未提交的 Git 修改作为一次性补丁投影；默认不传输
   {Colors.YELLOW}--watch{Colors.RESET}             保持本地进程运行，静默监听 .gitshadow 变化并提交 CAS 任务
+  {Colors.YELLOW}--git-pull-interval <sec>{Colors.RESET}  --watch 时定期对干净分支执行 Git fetch + ff-only pull（默认 10 秒）
+  {Colors.YELLOW}--no-git-pull{Colors.RESET}        --watch 时关闭 Git 自动拉取
   {Colors.YELLOW}--service{Colors.RESET}           使用 VPS 项目级常驻服务，而非每次新建边缘进程
   {Colors.YELLOW}--pull{Colors.RESET}              远端分支对齐时，强制拉取远端 origin 最新提交
   {Colors.YELLOW}--with-shadows{Colors.RESET}      pull 时额外执行 Shadow 双向 CAS 检查
@@ -327,6 +330,8 @@ def main(args: Optional[List[str]] = None):
     parser.add_argument("--wip", action="store_true", help="显式传输未提交修改（一次性 WIP 补丁）")
     parser.add_argument("--no-wip", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--watch", action="store_true", help="持续监听 .gitshadow 变化")
+    parser.add_argument("--git-pull-interval", type=float, default=10.0, help="--watch 时 Git 自动拉取间隔（秒）")
+    parser.add_argument("--no-git-pull", action="store_true", help="--watch 时关闭 Git 自动拉取")
     parser.add_argument("--service", action="store_true", help="使用项目级 VPS 常驻服务")
     parser.add_argument("--pull", action="store_true", help="远端强制拉取")
     parser.add_argument("--with-shadows", action="store_true", help="pull 时同步已登记的远端 Shadow 文件")
@@ -386,6 +391,7 @@ def main(args: Optional[List[str]] = None):
             sync_git_pull=opts.pull,
             public_url=os.environ.get("GIT_SHADOW_CLOUDCLI_PUBLIC_URL", "https://cli.daduiot.com"),
             cloudcli_base_url=opts.cloudcli_url,
+            cloudcli_token=os.environ.get("GIT_SHADOW_CLOUDCLI_TOKEN", "").strip() or None,
             include_wip=with_wip,
             include_cloudcli=include_cloudcli,
             shadow_store=shadow_store,
@@ -433,11 +439,14 @@ def main(args: Optional[List[str]] = None):
         return snapshot
 
     def watch_shadow(stop_event: Optional[threading.Event] = None) -> None:
-        """Watch only the Shadow lane; tracked source files remain Git-owned."""
+        """Watch Shadow and safely fast-forward the Git lane from its remote."""
         stop_event = stop_event or threading.Event()
         previous = shadow_snapshot()
         last_pull = 0.0
-        log_info("已进入 .gitshadow 静默监听；Git 追踪文件不会被自动打补丁。")
+        last_git_pull = 0.0
+        git_pull_blocked = False
+        git_pull_interval = max(2.0, float(opts.git_pull_interval))
+        log_info("已进入个人持续同步：.gitshadow 自动双向 CAS，Git 仅对干净分支执行 ff-only 自动拉取。")
         with LocalChangeWatcher(repo.root_dir) as local_watcher:
             if local_watcher.native:
                 log_info("本地使用 Linux inotify 监听 .gitshadow；不支持时自动回退轮询。")
@@ -458,14 +467,30 @@ def main(args: Optional[List[str]] = None):
                             time.sleep(1.0)
                         continue
                     if now - last_pull < 2.0:
-                        continue
-                    try:
-                        submit_shadow_pull()
-                        previous = shadow_snapshot()
-                        last_pull = now
-                    except Exception as exc:
-                        log_error("远端 Shadow 自动拉取失败（稍后重试）: %s" % exc)
-                        last_pull = now
+                        pass
+                    else:
+                        try:
+                            submit_shadow_pull()
+                            previous = shadow_snapshot()
+                            last_pull = now
+                        except Exception as exc:
+                            log_error("远端 Shadow 自动拉取失败（稍后重试）: %s" % exc)
+                            last_pull = now
+                    if repo.is_git and not opts.no_git_pull and now - last_git_pull >= git_pull_interval:
+                        result = auto_fast_forward_pull(repo.root_dir, branch=repo.branch)
+                        last_git_pull = now
+                        if result["status"] == "updated":
+                            repo._load_git_info()
+                            git_pull_blocked = False
+                            log_success("Git 远端提交已自动 fast-forward 拉回本地。")
+                        elif result["status"] == "blocked":
+                            if not git_pull_blocked:
+                                log_warn("Git 自动拉取暂停：本地工作区有未提交修改；不会覆盖本地文件。")
+                                git_pull_blocked = True
+                        elif result["status"] == "error":
+                            log_error("Git 自动拉取失败（稍后重试）: %s" % result.get("message", result.get("reason", "unknown error")))
+                        elif result["status"] == "up-to-date":
+                            git_pull_blocked = False
             except KeyboardInterrupt:
                 stop_event.set()
 
@@ -594,12 +619,17 @@ def main(args: Optional[List[str]] = None):
 
     # 8. pull 命令：本地拉取
     elif subcmd == "pull":
+        git_pull_returncode = 0
         if repo.is_git:
             log_info("正在从远端 Git 仓库拉取最新提交到本地...")
             import subprocess
             result = subprocess.run(["git", "pull"])
             if result.returncode != 0:
-                sys.exit(result.returncode)
+                git_pull_returncode = result.returncode
+                if opts.with_shadows:
+                    log_warn("Git 拉取未完成，继续执行独立的 Shadow 拉取；本地文件不会被覆盖。")
+                else:
+                    sys.exit(result.returncode)
         elif not opts.with_shadows:
             log_error("普通文件夹没有 Git lane；如需拉取 Shadow，请追加 --with-shadows。")
             sys.exit(1)
@@ -609,6 +639,8 @@ def main(args: Optional[List[str]] = None):
             except Exception as exc:
                 log_error("远端 Shadow 拉取失败: %s" % exc)
                 sys.exit(1)
+        if git_pull_returncode:
+            sys.exit(git_pull_returncode)
 
     else:
         log_error(f"未知子命令: {subcmd}")

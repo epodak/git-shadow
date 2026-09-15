@@ -25,7 +25,7 @@ class TestEdgeProtocol(unittest.TestCase):
 
     def test_ssh_transport_disables_remote_commands_and_tty(self):
         args = clean_ssh_args("vps", "agent --rpc")
-        self.assertEqual(args[:5], ["ssh", "-o", "RemoteCommand=none", "-o", "RequestTTY=no"])
+        self.assertEqual(args[:7], ["ssh", "-o", "RemoteCommand=none", "-o", "RequestTTY=no", "-o", "StrictHostKeyChecking=accept-new"])
         self.assertEqual(args[-2:], ["vps", "agent --rpc"])
 
     def test_standalone_agent_executes_plan_and_replays_events(self):
@@ -316,6 +316,29 @@ class TestEdgeProtocol(unittest.TestCase):
             [step["action"] for step in plan["steps"]],
             ["workspace.create", "cloudcli.session", "workspace.prepare"],
         )
+
+    def test_cloudcli_token_is_carried_only_when_explicitly_provided(self):
+        from git_shadow.engine import ShadowEngine
+
+        repo = SimpleNamespace(
+            root_dir=str(self.workspace),
+            remote_url="https://example.invalid/repo.git",
+            branch="main",
+            commit="abc123",
+            is_dirty=False,
+        )
+        engine = ShadowEngine.__new__(ShadowEngine)
+        engine.repo = repo
+        engine.remote_dir = str(self.workspace / "token-plan")
+        without_token = engine.build_edge_plan(provider="codex", include_cloudcli=True, shadow_files=[])
+        with_token = engine.build_edge_plan(
+            provider="codex",
+            cloudcli_token="secret-token",
+            include_cloudcli=True,
+            shadow_files=[],
+        )
+        self.assertNotIn("token", without_token["steps"][1])
+        self.assertEqual(with_token["steps"][1]["token"], "secret-token")
 
 
 if __name__ == "__main__":

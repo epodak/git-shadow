@@ -710,21 +710,31 @@ class EdgeExecutor:
             raise EdgeError("shadow pull conflict: %s" % ", ".join(conflicts))
         return {"changed": changed, "conflicts": 0}
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(
+        self,
+        bearer_override: Optional[str] = None,
+        api_key_override: Optional[str] = None,
+    ) -> Dict[str, str]:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        bearer = os.environ.get("GIT_SHADOW_CLOUDCLI_TOKEN", "").strip()
-        api_key = os.environ.get("GIT_SHADOW_CLOUDCLI_API_KEY", "").strip()
+        bearer = (bearer_override if bearer_override is not None else os.environ.get("GIT_SHADOW_CLOUDCLI_TOKEN", "")).strip()
+        api_key = (api_key_override if api_key_override is not None else os.environ.get("GIT_SHADOW_CLOUDCLI_API_KEY", "")).strip()
         if bearer:
             headers["Authorization"] = "Bearer " + bearer
         if api_key:
             headers["X-API-KEY"] = api_key
         return headers
 
-    def _http_json(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _http_json(
+        self,
+        url: str,
+        payload: Dict[str, Any],
+        bearer_override: Optional[str] = None,
+        api_key_override: Optional[str] = None,
+    ) -> Dict[str, Any]:
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
-            headers=self._headers(),
+            headers=self._headers(bearer_override, api_key_override),
             method="POST",
         )
         try:
@@ -763,8 +773,15 @@ class EdgeExecutor:
             if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.password:
                 raise EdgeError("CloudCLI %s must be an absolute HTTP(S) URL" % name)
         project_path_text = str(project_path)
+        bearer_token = str(step.get("token") or os.environ.get("GIT_SHADOW_CLOUDCLI_TOKEN", "")).strip() or None
+        api_key = str(step.get("api_key") or os.environ.get("GIT_SHADOW_CLOUDCLI_API_KEY", "")).strip() or None
 
-        self._http_json(base_url + "/api/projects/create-project", {"path": project_path_text})
+        self._http_json(
+            base_url + "/api/projects/create-project",
+            {"path": project_path_text},
+            bearer_override=bearer_token,
+            api_key_override=api_key,
+        )
         session_response = self._http_json(
             base_url + "/api/providers/sessions",
             {
@@ -772,6 +789,8 @@ class EdgeExecutor:
                 "projectPath": project_path_text,
                 "initialMessage": str(step.get("initial_message") or ""),
             },
+            bearer_override=bearer_token,
+            api_key_override=api_key,
         )
         session_id = session_response.get("sessionId")
         if not session_id and isinstance(session_response.get("data"), dict):

@@ -63,6 +63,7 @@ class ShadowEngine:
             "ssh",
             "-o", "RemoteCommand=none",
             "-o", "RequestTTY=no",
+            "-o", "StrictHostKeyChecking=accept-new",
             self.remote_host,
             remote_cmd
         ]
@@ -188,6 +189,7 @@ class ShadowEngine:
         sync_git_pull: bool = False,
         public_url: str = "https://cli.daduiot.com",
         cloudcli_base_url: Optional[str] = None,
+        cloudcli_token: Optional[str] = None,
         include_wip: bool = False,
         include_cloudcli: bool = True,
         shadow_store: Optional[ShadowManifestStore] = None,
@@ -245,6 +247,10 @@ class ShadowEngine:
             }
             if cloudcli_base_url:
                 session_step["base_url"] = cloudcli_base_url.rstrip("/")
+            if cloudcli_token:
+                # Sent only inside the encrypted SSH plan; never emitted as
+                # an event or written into the projected workspace.
+                session_step["token"] = cloudcli_token
             steps.append(session_step)
 
         # CloudCLI is now live; clone/init continues as a later edge step.

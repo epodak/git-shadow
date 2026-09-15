@@ -35,6 +35,8 @@ def clean_ssh_args(host: str, remote_command: str) -> List[str]:
         "RemoteCommand=none",
         "-o",
         "RequestTTY=no",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
         host,
         remote_command,
     ]

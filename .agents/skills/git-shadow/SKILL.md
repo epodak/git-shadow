@@ -5,7 +5,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 
 # git-shadow 智能体交互指南与操作速查
 
-`git-shadow` 是一款面向现代云端开发与 AI 编程智能体的跨端极速流式投影工具。它遵循**三态隔离公理**：
+`git-shadow` 当前个人模式是“跨平台本地控制端 → Linux VPS 远端执行端”的极速流式投影工具。它遵循**三态隔离公理**：
 1. **公有代码走 Git**（远端骨干网直接 clone/fetch 或本地 P2P 流式推送）；
 2. **私有配置走影子**（受 `.gitignore` 与 `.gitshadow` 保护的敏感文件通过 Manifest/CAS 原子投影，禁止静默覆盖另一端修改）；
 3. **重型依赖走原生**（远端 Linux 宿主原生安装，绝不跨平台对拷）。
@@ -21,7 +21,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 | :--- | :--- | :--- |
 | **一键启动 AI (统一入口)** | `git shadow run <host> [agent]` | **乐观先行**：0 秒弹出浏览器 (Web AI) 或连通终端 (TTY AI)，**后台并发打入代码与影子**，零感知等待 |
 | **数字菜单智能挑选** | `git shadow run <host>` | 自动探查远端已就绪的 AI Agent，呈现数字菜单供一键挑选启动 |
-| **前台随行实时监听** | `git shadow run <host> [agent] --watch` | 范式 A：本地 `.gitshadow` 变化推送、远端变化定期拉取，**终端关闭即自动随行销毁，零残留** |
+| **前台随行实时监听** | `git shadow run <host> [agent] --watch` | 范式 A：本地 `.gitshadow` 双向 CAS + 干净 Git 分支 ff-only 自动拉取，**终端关闭即自动随行销毁，零残留** |
 | **Linux 后台服务治理** | `git shadow service <host> load` | 范式 B：将项目级任务执行服务挂载到远端 Linux 后台，**带 10 分钟心跳租约超时自毁，彻底释放 VPS 内存** |
 | **注销 Linux 服务** | `git shadow service <host> unload` | 优雅停止远端任务服务，清除 PID/Lease/socket，归还服务进程资源 |
 | **检查服务状态** | `git shadow service <host> status` | 查看远端服务 PID、版本、状态与租约剩余秒数 |
@@ -72,7 +72,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 - CloudCLI 会话必须由同一个远端 Job 明确创建，收到 `session.ready` 后才打开 `/session/<id>`；禁止直接扫描 SQLite 选择“最新会话”。
 - CloudCLI provider 必须在 Session 创建前确定；命令行使用 `--provider`，交互模式使用本地菜单。当前数据库 provider 非空，不创建 provider-neutral 临时 Session。
 - 短任务完成即退出；长期服务继续遵循 600 秒 Lease 心跳和超时自毁契约。
-- `service-agent` 是 VPS 任务承载端，不是本地工作区 watcher；双向 Shadow 自动同步必须由本地 `--watch` 发现变化，再通过服务执行 CAS。Linux 本地使用 inotify，其他平台回退轮询。
+- `service-agent` 是 VPS 任务承载端，不是本地工作区 watcher；双向 Shadow 自动同步必须由本地 `--watch` 发现变化，再通过服务执行 CAS。Linux 本地使用 inotify，其他平台回退轮询。Git 追踪代码仍走 Git，`--watch` 只在本地干净时执行 `fetch + merge --ff-only`，本地有修改就暂停并提示。
 
 ### 3. `.gitshadow` 显式白名单契约 (No Blackbox)
 - 严禁在底层 Python 代码中硬编码排除黑名单（如私自排除 `_dev_log/`）；
@@ -106,7 +106,7 @@ git shadow run aws cloudcli --provider codex
 # 加载后台服务到 Linux 治理
 git shadow service aws load
 
-# 本地持续发现并双向提交 .gitshadow 变化
+# 本地持续发现并双向提交 .gitshadow 变化，同时安全拉回远端 Git 提交
 git shadow run aws cloudcli --provider codex --service --watch
 
 # 查看运行状态与租约倒计时
@@ -132,4 +132,6 @@ git shadow edge resume aws <job-id>
 git shadow run aws cloudcli --provider codex --wip
 ```
 
-VPS 上的 CloudCLI 内部地址默认是 `http://127.0.0.1:3001`，可通过 `--cloudcli-url` 或 `GIT_SHADOW_CLOUDCLI_BASE_URL` 覆盖。需要鉴权时只在 VPS 环境设置 `GIT_SHADOW_CLOUDCLI_TOKEN` / `GIT_SHADOW_CLOUDCLI_API_KEY`，绝不把凭证放进任务事件或日志。
+VPS 上的 CloudCLI 内部地址默认是 `http://127.0.0.1:3001`，可通过 `--cloudcli-url` 或 `GIT_SHADOW_CLOUDCLI_BASE_URL` 覆盖。一次性个人任务可在控制端设置 `GIT_SHADOW_CLOUDCLI_TOKEN`，它只随加密 SSH 计划传输并在远端持久化元数据中脱敏；常驻 service 则应在 VPS 环境设置 `GIT_SHADOW_CLOUDCLI_TOKEN` / `GIT_SHADOW_CLOUDCLI_API_KEY`。凭证绝不进入工作区、任务事件或日志。
+
+Node 生态统一使用 pnpm：新 VPS 先执行 `corepack enable pnpm`，再用 `pnpm add --global @cloudcli-ai/cloudcli@<pinned-version>` 安装 CloudCLI；不要在项目工作区生成 `package-lock.json`，也不要把 npm 项目依赖混入跨端投影。

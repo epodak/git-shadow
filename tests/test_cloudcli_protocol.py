@@ -13,14 +13,17 @@ class TestCloudCLIProtocol(unittest.TestCase):
     def setUp(self):
         self.state_dir = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_cloudcli_", dir=str(pathlib.Path.home())))
         self.records = []
+        self.auth_records = []
 
         records = self.records
+        auth_records = self.auth_records
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length) or b"{}")
                 records.append((self.path, payload))
+                auth_records.append(self.headers.get("Authorization"))
                 response = {"sessionId": "session-test"} if self.path.endswith("/providers/sessions") else {}
                 encoded = json.dumps(response).encode("utf-8")
                 self.send_response(200)
@@ -162,6 +165,38 @@ class TestCloudCLIProtocol(unittest.TestCase):
                         "base_url": "localhost:3001",
                     },
                 )
+        finally:
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
+
+    def test_cloudcli_token_override_is_used_without_being_emitted(self):
+        target = self.state_dir / "token-project"
+        executor = EdgeExecutor(str(self.state_dir / "token-state"))
+        try:
+            executor.submit(
+                {
+                    "type": "submit",
+                    "job_id": "job-cloudcli-token",
+                    "steps": [
+                        {"id": "workspace-create", "action": "workspace.create", "target": str(target)},
+                        {
+                            "id": "cloudcli-session",
+                            "action": "cloudcli.session",
+                            "project_path": str(target),
+                            "provider": "codex",
+                            "base_url": "http://127.0.0.1:%s" % self.server.server_port,
+                            "public_url": "https://cli.daduiot.com",
+                            "token": "secret-token",
+                        },
+                    ],
+                }
+            )
+            worker = executor._jobs["job-cloudcli-token"]["worker"]
+            worker.join(timeout=10)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(self.auth_records[-2:], ["Bearer secret-token", "Bearer secret-token"])
+            events = (self.state_dir / "token-state" / "runs" / "job-cloudcli-token" / "events.ndjson").read_text()
+            self.assertNotIn("secret-token", events)
         finally:
             executor._stop.set()
             executor._lease_thread.join(timeout=2)

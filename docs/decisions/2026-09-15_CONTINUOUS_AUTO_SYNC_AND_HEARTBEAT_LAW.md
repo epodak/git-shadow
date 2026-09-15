@@ -112,7 +112,7 @@
 - **契约行为**：
   1. 命令执行时，前台保持挂起状态并显示动态心跳状态条；
   2. 自动唤起系统默认浏览器弹出 CloudCLI Web 界面；
-  3. Linux 当前使用 inotify、其他平台使用轮询 fallback 发现 `.gitshadow` 文件并提交 Shadow CAS 任务；Git 追踪文件仍通过 Git 提交和拉取；
+  3. Linux 当前使用 inotify、其他平台使用轮询 fallback 发现 `.gitshadow` 文件并提交 Shadow CAS 任务；Git 追踪文件仍通过 Git 提交和拉取。个人闭环中，`--watch` 可定期检查 `origin`，仅在本地工作区干净时执行 `fetch + merge --ff-only`；发现本地修改则暂停 Git 自动拉取并提示，绝不直接覆盖；
   4. **随行退出**：当用户在终端按下 `Ctrl + C`，本地 watcher 会话终止；远端服务继续按 Lease 规则存活或自毁，不会留下无租约的僵尸进程。
 
 ---
@@ -121,6 +121,16 @@
 
 - **目标约束**：原生 watcher 方案应采用 OS 内核事件机制，在无文件改动时降低 CPU 唤醒；当前已落地 Linux inotify，其他平台仍使用轮询 fallback。
 - **内存红线约束**：服务端不得加载本地项目依赖，常驻执行端的资源占用必须纳入后续真实 VPS smoke test 验收。
+
+### 2.5 个人闭环的 Git 收割边界 (`SafeGitAutoPull`)
+
+个人开发优先验证“远端 Agent commit/push、本地自动收割”的体验，但自动化仍必须遵守 Git 的合流语义：
+
+- 远端 Agent 先将追踪代码 commit 并 push 到配置好的 Git remote；
+- 本地 `--watch` 通过 Git 原生命令获取远端分支，并只接受 fast-forward；
+- 本地存在未提交追踪文件或未追踪文件时，Git 自动拉取进入暂停状态，不 stash、不 reset、不覆盖；
+- 非 fast-forward、鉴权失败或网络失败只报告错误，等待用户通过常规 Git 合并/冲突流程处理；
+- Shadow 文件不进入 Git 合流，继续由 `.gitshadow` Manifest/CAS 双向处理。
 
 ---
 

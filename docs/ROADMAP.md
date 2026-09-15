@@ -15,6 +15,35 @@
 - [x] WIP 补丁改为显式 `--wip`
 - [x] 项目级 VPS service-agent：Unix socket、状态、Lease 自毁与 SSH 客户端
 
+## 当前执行目标：个人闭环（优先于最终产品）
+
+这一阶段不做桌面安装包、Managed VPS、IDE 扩展或多用户商业化。唯一目标是让项目作者自己的
+“本地影子开发 → 远程 VPS CloudCLI Web Remote → 本地持续收割”稳定可用：
+
+```text
+本地 Git 工作区
+  ├─ 已提交代码 ── GitHub ── VPS Git 工作区 ── 远程 Agent commit/push
+  └─ .gitshadow ── Shadow Manifest/CAS 双向同步 ── VPS 私有工作区
+                                  ↓
+                         CloudCLI Web Remote Session
+                                  ↓
+                         本地 watcher 持续接收结果
+```
+
+个人闭环的明确语义：
+
+- 初次启动使用 `git shadow run <host> cloudcli --provider <provider> --service --watch`，浏览器打开本次准确 Session；
+- `.gitshadow` 文件由本地 watcher 自动 push，远端新建或修改的 Shadow 文件自动 pull；CAS 冲突保留冲突副本，绝不覆盖；
+- Git 追踪代码仍只走 Git。watcher 定期 `fetch + merge --ff-only` 拉回远端 Agent 已 push 的提交；本地有未提交改动时自动拉取暂停并提示；
+- 本地 watcher 进程必须保持运行；退出后 VPS 服务依靠 Lease 自动回收，下一次启动可恢复；
+- “完全跑通”的验收必须包含真实 VPS、真实 CloudCLI、真实 GitHub 和三种 Shadow 流程，而不只是假服务器测试。
+
+个人闭环的平台边界也必须明确：Windows、Linux、macOS 都可以作为本地控制端；当前远端执行端只验收
+Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Windows/Linux/macOS 之间任意互为远端执行端。
+远端 macOS/Windows 适配属于未来独立工作，不纳入本轮个人闭环。
+
+当前只按这个个人闭环排任务；第 8 节的独立程序、Snapshot Lane、Agent Adapter、Managed VPS 均暂缓，不作为当前开发阻塞。
+
 ## 1. P0：真实运行闭环
 
 ### 1.1 CLI 与安装
@@ -30,6 +59,7 @@
 - [x] 验证 `session.ready` 早于 Git clone 完成
 - [x] clone/后续步骤失败时广播 partial 状态；Session 创建失败保持明确失败
 - [x] provider、project path、公开深链的契约校验
+- [x] 真实 `aws-us` VPS 部署 CloudCLI 1.37.3，并通过 SSH 转发完成注册、登录、受保护 API 与 `git shadow run` smoke
 
 ### 1.3 Git 工作区
 
@@ -60,7 +90,7 @@
 - [x] 本地和 VPS 同时修改时生成两端冲突副本，绝不静默覆盖
 - [x] 删除、空文件、重命名和目录层级的核心路径测试
 - [x] 本地 watcher 同时处理已登记 Shadow 的 push lane 与 pull lane
-- [x] Git 追踪文件继续只通过 Git，不被 Shadow watcher 接管
+- [x] Git 追踪文件继续只通过 Git，不被 Shadow watcher 接管；watch 模式可安全执行 Git ff-only 自动拉取
 
 ## 4. P1：任务可靠性
 
@@ -99,16 +129,56 @@
 - [ ] 本地 commit/push 与远端 AI commit/pull 流程
 - [ ] 文档、Skill、ADR、CLI help、实现和测试完全一致
 
+## 8. P1/P2：独立程序、本地首启与托管 VPS
+
+产品方向已校正为：**独立的本地工作区启动器是主入口，GitHub 是可选加速器，IDE 扩展是可选集成；Managed VPS 是可选托管数据面。** 详细决策见 [本地工作区启动器、Agent 适配与托管 VPS 产品路线 ADR](decisions/2026-09-15_IDE_EXTENSION_AND_MANAGED_VPS_ROADMAP.md)。
+
+### 8.1 独立程序与无 Python 分发
+
+- [ ] 定义桌面启动器与 Core Client 的稳定本地进程协议
+- [ ] 提供 Windows/macOS/Linux standalone client，内置运行时，不要求预装 Python
+- [ ] 实现“选择文件夹 → 选择 Agent → 开始远程项目”的首启流程
+- [ ] 安装包覆盖升级、卸载、停止、销毁、重试和恢复
+- [ ] 保留 `pip install -e .` 与源码 wrapper 作为贡献者/高级用户模式
+
+### 8.2 GitHub 非必需的 Workspace Snapshot Lane
+
+- [ ] 支持普通本地文件夹，不要求 Git 初始化或 GitHub 账号
+- [ ] 设计 manifest/hash/加密分块快照协议，禁止无边界全量 rsync
+- [ ] 排除依赖、缓存、构建产物和未经允许的私密文件
+- [ ] 远端修改以 patch/diff 返回，本地确认后应用
+- [ ] 覆盖中断、重试、冲突、取消和销毁测试
+- [ ] 支持随时初始化 Git 或导出到 GitHub
+
+### 8.3 Agent 适配器注册表
+
+- [ ] 抽象 `AgentAdapterRegistry`：detect/prepare/launch/health/auth boundary
+- [ ] 将 CloudCLI、Codex、Claude Code、Command Code、OpenCode 纳入统一适配描述
+- [ ] 验证 `agy`/`antigravity` 的启动形态、认证边界和原生安装准备
+- [ ] 建立 Agent 版本兼容矩阵和失败诊断
+
+### 8.4 Managed VPS MVP
+
+- [ ] 单云厂商、单 Linux 镜像、有限规格的工作区创建/暂停/销毁
+- [ ] 复用现有 Edge/Service Agent、TypedExecutionPlan、事件重放、Shadow CAS 和 Lease
+- [ ] 增加租户隔离、资源配额、闲置回收、审计和成本上限
+- [ ] 独立程序、CLI 与托管控制面共用 API；自有 VPS/SSH 模式保持能力平权
+
+### 8.5 可选生态入口
+
+- [ ] VS Code 等 IDE 扩展作为可选控制面，而非产品准入条件
+- [ ] Web 控制台用于项目列表、用量、账单和远端工作区管理
+- [ ] 多地域/多云、团队权限、共享工作区和 Agent 适配器扩展机制
+
 ## 当前优先顺序
 
 ```text
-P0.1 真实 CloudCLI 测试边界（核心编排已完成）
-P0.2 VPS service load/unload/status（已完成基础闭环）
-P0.3 Shadow 双向 pull/conflict
-P1.1 retry/resume/断线重连
-P1.2 原生文件 watcher
-P1.3 安全与真实 VPS smoke test
-P2   发布验收与文档冻结
+P0.1 真实 CloudCLI + GitHub + VPS 个人闭环 smoke test
+P0.2 Shadow 双向 push/pull/conflict 个人验收
+P0.3 Git 自动 ff-only pull 与本地脏工作区保护
+P0.4 watcher/service Lease 断线、恢复、卸载验收
+P1   安全、资源、文档和 CLI 一致性收口
+暂缓  独立程序、Workspace Snapshot、Agent Adapter、Managed VPS、IDE/Web 生态
 ```
 
 ## 完成定义

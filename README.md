@@ -90,6 +90,14 @@ python3 -m git_shadow.cli install ~/.local/bin
 the package or pip: `edge install`/`service load` upload standalone Python
 executors and run them with the VPS's existing `python3`.
 
+For users without a local Python installation, the planned distribution path
+is a standalone desktop client with the runtime bundled. Users should be able
+to choose a local folder and start a remote Agent without knowing Python,
+GitHub, or SSH. IDE extensions remain optional integrations. The Python
+package remains the source/developer installation path; it is not intended to
+be a permanent prerequisite for ordinary users. See the
+[local workspace launcher and managed VPS roadmap](docs/decisions/2026-09-15_IDE_EXTENSION_AND_MANAGED_VPS_ROADMAP.md).
+
 #### How `git shadow` Works (Git Subcommand Discovery)
 Git has a built-in subcommand discovery mechanism: whenever you type `git <subcommand>`, Git searches your system `$PATH` for an executable named `git-<subcommand>`.
 Therefore, having `git-shadow` in your `$PATH` enables both commands interchangeably:
@@ -152,8 +160,17 @@ git shadow edge resume aws-micro <job-id>
 The VPS executor persists redacted job metadata, state, and replayable events
 under `~/.local/share/git-shadow/runs/<job-id>/`. Set
 `GIT_SHADOW_CLOUDCLI_BASE_URL` on the VPS when CloudCLI is not listening on
-`http://127.0.0.1:3001`. CloudCLI credentials stay in VPS environment
-variables and are never written to the event journal.
+`http://127.0.0.1:3001`. For a one-shot personal run, a local
+`GIT_SHADOW_CLOUDCLI_TOKEN` is also accepted: it travels only inside the
+encrypted SSH plan, is redacted from persisted metadata, and is never written
+to the workspace or event journal. A resident service should instead receive
+the token through its VPS environment.
+
+The CloudCLI runtime is a Node application, but this project uses pnpm as
+the package-manager convention. On a fresh Linux VPS, enable pnpm through
+Corepack and install the pinned CloudCLI release with `pnpm add --global`;
+do not create a project `package-lock.json` or mix npm-installed project
+dependencies into the projected workspace.
 
 #### 💻 Project & open an interactive shell
 ```bash
@@ -176,6 +193,25 @@ git shadow service aws-micro unload
 `service-agent` 负责 VPS 端任务执行、事件重放和租约自毁；本地 `--watch` 仍是发现本地
 `.gitshadow` 变化并触发双向 CAS 的控制端。服务端不会把本地磁盘变化猜成同步请求。
 常驻服务连接中断时，控制端会用同一 `job_id` 重连并按事件序号去重，不会重复执行同一任务。
+
+#### 🔁 Personal continuous development loop (recommended)
+
+For the author's own local-to-VPS workflow, keep this command running while the remote
+CloudCLI Agent works:
+
+```bash
+git shadow run aws-micro cloudcli --provider codex --service --watch
+```
+
+The watcher automatically pushes local `.gitshadow` changes and pulls remote Shadow
+changes through CAS. It also periodically fetches the Git remote and applies only a
+fast-forward update when the local Git worktree is clean. Local uncommitted changes
+pause Git auto-pull and are never overwritten. Use `--no-git-pull` to disable this
+lane or `--git-pull-interval 30` to change its interval.
+
+The remote Agent should commit and push tracked code to GitHub; the local watcher
+then collects those commits. This personal workflow is the current acceptance target;
+standalone desktop distribution, IDE integration, and Managed VPS are future work.
 
 #### 🔄 Pull AI's committed changes back to local
 ```bash

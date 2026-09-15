@@ -120,7 +120,13 @@ EOF
                 json_str = out[start_idx:end_idx+1]
                 self.data = json.loads(json_str)
             else:
-                self.data = {"error": f"Invalid probe response: {out}"}
+                stderr = getattr(res, "stderr", "") or ""
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode("utf-8", "replace")
+                details = "ssh_exit=%s" % getattr(res, "returncode", "unknown")
+                if str(stderr).strip():
+                    details += "; stderr=%s" % str(stderr).strip()
+                self.data = {"error": "Invalid probe response: %s (%s)" % (out, details)}
         except Exception as e:
             self.data = {"error": str(e), "raw": res.stdout}
 
