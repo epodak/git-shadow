@@ -12,7 +12,10 @@ import argparse
 import base64
 import datetime as _datetime
 import errno
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import fnmatch
 import hashlib
 import json
@@ -762,11 +765,13 @@ class EdgeExecutor:
         lock_path = self._shadow_manifest_path(target).with_suffix(".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+", encoding="utf-8") as lock_stream:
-            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+            if fcntl is not None:
+                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
             try:
                 return self._shadow_sync_unlocked(job_id, step)
             finally:
-                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+                if fcntl is not None:
+                    fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
 
     def _shadow_pull(self, job_id: str, step: Dict[str, Any]) -> Dict[str, Any]:
         """Return remote Shadow changes without overwriting local state blindly."""
@@ -799,7 +804,8 @@ class EdgeExecutor:
         changed = 0
         conflicts: List[str] = []
         with lock_path.open("a+", encoding="utf-8") as lock_stream:
-            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+            if fcntl is not None:
+                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
             try:
                 for raw_entry in entries:
                     if not isinstance(raw_entry, dict):
@@ -843,7 +849,8 @@ class EdgeExecutor:
                         )
                         conflicts.append(relative)
             finally:
-                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+                if fcntl is not None:
+                    fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
         if conflicts:
             raise EdgeError("shadow pull conflict: %s" % ", ".join(conflicts))
         return {"changed": changed, "conflicts": 0}
@@ -891,6 +898,46 @@ class EdgeExecutor:
             raise EdgeError("CloudCLI API returned an invalid object")
         return parsed
 
+    def _auto_mint_cloudcli_token(self) -> Optional[str]:
+        """Auto-mint a local JWT token from ~/.cloudcli/auth.db if present."""
+        db_path = self.home / ".cloudcli" / "auth.db"
+        if not db_path.is_file():
+            return None
+        try:
+            import sqlite3
+            import hmac
+
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM app_config WHERE key='jwt_secret';")
+            row = cur.fetchone()
+            if not row or not row[0]:
+                return None
+            jwt_secret = str(row[0])
+
+            cur.execute("SELECT id, username FROM users WHERE is_active = 1 ORDER BY id ASC LIMIT 1;")
+            user_row = cur.fetchone()
+            if not user_row:
+                return None
+            user_id, username = user_row[0], user_row[1]
+
+            def b64url(data: bytes) -> str:
+                return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+            header = b64url(json.dumps({"alg": "HS256", "typ": "JWT"}).encode("utf-8"))
+            now = int(time.time())
+            payload = b64url(json.dumps({
+                "userId": user_id,
+                "username": username,
+                "iat": now,
+                "exp": now + 7 * 86400,
+            }).encode("utf-8"))
+            message = f"{header}.{payload}".encode("ascii")
+            sig = b64url(hmac.new(jwt_secret.encode("utf-8"), message, hashlib.sha256).digest())
+            return f"{header}.{payload}.{sig}"
+        except Exception:
+            return None
+
     def _cloudcli_session(self, job_id: str, step: Dict[str, Any]) -> Dict[str, Any]:
         base_url = str(
             step.get("base_url")
@@ -913,13 +960,19 @@ class EdgeExecutor:
         project_path_text = str(project_path)
         bearer_token = str(step.get("token") or os.environ.get("GIT_SHADOW_CLOUDCLI_TOKEN", "")).strip() or None
         api_key = str(step.get("api_key") or os.environ.get("GIT_SHADOW_CLOUDCLI_API_KEY", "")).strip() or None
+        if not bearer_token and not api_key:
+            bearer_token = self._auto_mint_cloudcli_token()
 
-        self._http_json(
-            base_url + "/api/projects/create-project",
-            {"path": project_path_text},
-            bearer_override=bearer_token,
-            api_key_override=api_key,
-        )
+        try:
+            self._http_json(
+                base_url + "/api/projects/create-project",
+                {"path": project_path_text},
+                bearer_override=bearer_token,
+                api_key_override=api_key,
+            )
+        except EdgeError as exc:
+            if "PROJECT_ALREADY_EXISTS" not in str(exc) and "already exists" not in str(exc).lower():
+                raise
         session_response = self._http_json(
             base_url + "/api/providers/sessions",
             {

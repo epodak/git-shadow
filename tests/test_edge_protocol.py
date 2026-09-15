@@ -199,6 +199,44 @@ class TestEdgeProtocol(unittest.TestCase):
             else:
                 os.environ["GIT_SHADOW_CLOUDCLI_TOKEN"] = previous
 
+    def test_auto_mint_cloudcli_token_from_auth_db(self):
+        import sqlite3
+        from git_shadow.edge_agent import EdgeExecutor
+
+        cloudcli_dir = self.home / ".cloudcli"
+        cloudcli_dir.mkdir(parents=True, exist_ok=True)
+        db_path = cloudcli_dir / "auth.db"
+        created_temp_db = not db_path.exists()
+        backup_db = None
+        if not created_temp_db:
+            backup_db = db_path.read_bytes()
+
+        try:
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT);")
+            cur.execute("INSERT OR REPLACE INTO app_config (key, value) VALUES ('jwt_secret', 'test-secret-12345');")
+            cur.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT, is_active INTEGER);")
+            cur.execute("INSERT OR REPLACE INTO users (id, username, password_hash, is_active) VALUES (1, 'testuser', 'hash', 1);")
+            conn.commit()
+            conn.close()
+
+            executor = EdgeExecutor(str(self.state_dir / "state-token-mint"))
+            token = executor._auto_mint_cloudcli_token()
+            self.assertIsNotNone(token)
+            parts = token.split(".")
+            self.assertEqual(len(parts), 3)
+            payload = json.loads(base64.urlsafe_b64decode(parts[1] + "==").decode("utf-8"))
+            self.assertEqual(payload["userId"], 1)
+            self.assertEqual(payload["username"], "testuser")
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
+        finally:
+            if created_temp_db and db_path.exists():
+                db_path.unlink()
+            elif backup_db is not None:
+                db_path.write_bytes(backup_db)
+
     def test_expired_lease_cancels_running_step(self):
         from git_shadow.edge_agent import EdgeExecutor
 
