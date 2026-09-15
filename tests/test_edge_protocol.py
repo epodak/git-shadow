@@ -88,6 +88,9 @@ class TestEdgeProtocol(unittest.TestCase):
         self.assertEqual(saved["token"], "<redacted>")
         self.assertEqual(saved["archive_b64"], "<redacted>")
         self.assertEqual(saved["safe"], "ok")
+        journal.append({"event": "safe"})
+        self.assertEqual(journal.request_path.stat().st_mode & 0o077, 0)
+        self.assertEqual(journal.events_path.stat().st_mode & 0o077, 0)
 
     def test_expired_lease_cancels_running_step(self):
         from git_shadow.edge_agent import EdgeExecutor

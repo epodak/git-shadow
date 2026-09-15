@@ -121,6 +121,10 @@ class EventJournal:
         self.state_path = self.directory / "state.json"
         self.request_path = self.directory / "request.json"
         self.directory.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self.directory, 0o700)
+        except OSError:
+            pass
         self._lock = threading.Lock()
         self._seq = self._read_last_seq()
 
@@ -141,11 +145,19 @@ class EventJournal:
 
     def save_request(self, request: Dict[str, Any]) -> None:
         self.request_path.write_text(json_dump(redact(request)) + "\n", encoding="utf-8")
+        try:
+            os.chmod(self.request_path, 0o600)
+        except OSError:
+            pass
 
     def save_state(self, state: Dict[str, Any]) -> None:
         temporary = self.state_path.with_suffix(".tmp")
         temporary.write_text(json_dump(redact(state)) + "\n", encoding="utf-8")
         os.replace(str(temporary), str(self.state_path))
+        try:
+            os.chmod(self.state_path, 0o600)
+        except OSError:
+            pass
 
     def append(self, event: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
@@ -156,6 +168,10 @@ class EventJournal:
                 stream.write(json_dump(persisted) + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
+            try:
+                os.chmod(self.events_path, 0o600)
+            except OSError:
+                pass
             return payload
 
     def replay(self, after_seq: int) -> Iterable[Dict[str, Any]]:

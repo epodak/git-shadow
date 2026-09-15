@@ -103,8 +103,8 @@ class ServiceClient(EdgeClient):
         socket_path = self.service_root + "/service.sock"
         lease_path = self.service_root + "/lease"
         command = (
-            "mkdir -p \"%s\"; "
-            "if [ -f \"%s\" ] && kill -0 \"$(cat \"%s\")\" 2>/dev/null; then "
+            "umask 077; mkdir -p \"%s\"; "
+            "if [ -f \"%s\" ] && [ -S \"%s\" ] && kill -0 \"$(cat \"%s\")\" 2>/dev/null; then "
             "touch \"%s\"; "
             "else rm -f \"%s\" \"%s\" \"%s\"; "
             "nohup %s \"%s\" --serve --service-root \"%s\" --state-dir \"%s\" --lease-ttl %s "
@@ -115,6 +115,7 @@ class ServiceClient(EdgeClient):
             % (
                 self.service_root,
                 pid_path,
+                socket_path,
                 pid_path,
                 lease_path,
                 socket_path,
@@ -145,10 +146,21 @@ class ServiceClient(EdgeClient):
     def unload(self) -> Dict[str, Any]:
         pid_path = self.service_root + "/pid"
         command = (
-            "if [ -f \"%s\" ]; then kill -TERM \"$(cat \"%s\")\" 2>/dev/null || true; "
-            "for i in $(seq 1 30); do [ ! -f \"%s\" ] && break; sleep 0.1; done; fi; "
+            "if [ -f \"%s\" ] && [ -S \"%s\" ]; then kill -TERM \"$(cat \"%s\")\" 2>/dev/null || true; "
+            "for i in $(seq 1 30); do [ ! -f \"%s\" ] && break; sleep 0.1; done; "
+            "else rm -f \"%s\" \"%s\" \"%s\"; fi; "
             "if [ -f \"%s\" ]; then cat \"%s\"; else printf '{\"status\":\"stopped\"}\\n'; fi"
-            % (pid_path, pid_path, pid_path, self.service_root + "/state.json", self.service_root + "/state.json")
+            % (
+                pid_path,
+                self.service_root + "/service.sock",
+                pid_path,
+                pid_path,
+                pid_path,
+                self.service_root + "/service.sock",
+                self.service_root + "/lease",
+                self.service_root + "/state.json",
+                self.service_root + "/state.json",
+            )
         )
         result = self._run_ssh(command)
         if result.returncode != 0:

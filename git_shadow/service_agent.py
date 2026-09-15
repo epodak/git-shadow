@@ -141,6 +141,10 @@ class ServiceRuntime:
         temporary = self.state_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
         os.replace(str(temporary), str(self.state_path))
+        try:
+            os.chmod(self.state_path, 0o600)
+        except OSError:
+            pass
 
     def _lease_expired(self) -> bool:
         try:
@@ -207,6 +211,11 @@ class ServiceRuntime:
     def serve(self) -> int:
         self.service_root.mkdir(parents=True, exist_ok=True)
         self.state_root.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self.service_root, 0o700)
+            os.chmod(self.state_root, 0o700)
+        except OSError:
+            pass
         try:
             self.socket_path.unlink()
         except FileNotFoundError:
