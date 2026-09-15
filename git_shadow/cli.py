@@ -63,6 +63,7 @@ def print_help():
   {Colors.GREEN}pull <host> --with-shadows{Colors.RESET} 同时拉取已登记的远端 .gitshadow 变化
   {Colors.GREEN}edge install <host>{Colors.RESET} 安装/更新 VPS 端 JSONL 边缘执行器
   {Colors.GREEN}edge status <host> <job>{Colors.RESET} 查询远端任务状态
+  {Colors.GREEN}edge resume <host> <job>{Colors.RESET} 断线后按事件序号恢复任务输出
   {Colors.GREEN}install [dir]{Colors.RESET}     安装本地 git-shadow / git-shadow.cmd wrapper（默认 ~/.local/bin）
   {Colors.GREEN}service <host> load|status|unload{Colors.RESET} 管理项目级 VPS 常驻边缘服务
   {Colors.GREEN}run/push/pull/up ... --service{Colors.RESET} 通过常驻服务提交任务，断开后可恢复
