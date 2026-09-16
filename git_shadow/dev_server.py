@@ -58,7 +58,7 @@ class ShadowDevServer:
         self.remote_host = remote_host
         self.remote_dir = remote_dir
         self.launch_mode = launch_mode
-        self.provider = provider
+        self.provider = (provider or os.environ.get("GIT_SHADOW_PROVIDER", "")).strip().lower() or "codex"
         self.with_wip = with_wip
         self.auto_open_browser = auto_open_browser
 

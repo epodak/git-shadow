@@ -237,13 +237,12 @@ class ShadowEngine:
             if archive_proc.returncode == 0 and archive_proc.stdout:
                 workspace_step["archive_b64"] = base64.b64encode(archive_proc.stdout).decode("ascii")
         if include_cloudcli:
-            if not provider:
-                raise ValueError("CloudCLI plan requires a provider")
+            resolved_provider = (provider or os.environ.get("GIT_SHADOW_PROVIDER", "")).strip().lower() or "codex"
             session_step: Dict[str, Any] = {
                 "id": "cloudcli.session",
                 "action": "cloudcli.session",
                 "project_path": target_dir,
-                "provider": provider,
+                "provider": resolved_provider,
                 "public_url": public_url.rstrip("/"),
                 "initial_message": "",
             }
