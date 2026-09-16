@@ -45,12 +45,18 @@ def get_project_binding(project_root: str) -> Optional[Dict[str, str]]:
     return bindings.get(key)
 
 
-def set_project_binding(project_root: str, host: str, remote_dir: Optional[str] = None) -> Dict[str, str]:
+def set_project_binding(
+    project_root: str,
+    host: str,
+    remote_dir: Optional[str] = None,
+    launch_mode: str = "cloudcli",
+) -> Dict[str, str]:
     key = normalize_project_path(project_root)
     bindings = load_all_bindings()
     entry = {
         "host": host,
         "remote_dir": remote_dir or f"~/wkspace/{pathlib.Path(project_root).name}",
+        "launch_mode": launch_mode,
         "project_root": key,
     }
     bindings[key] = entry
@@ -132,9 +138,10 @@ def probe_remote_target(host: str, repo_name: str) -> Tuple[bool, str]:
     return False, f"~/wkspace/{repo_name}"
 
 
-def interactive_setup_binding(project_root: str, default_host: Optional[str] = None) -> Tuple[str, str]:
+def interactive_setup_binding(project_root: str, default_host: Optional[str] = None) -> Tuple[str, str, str]:
     """
-    交互式智能引导用户挑选目标 VPS 及远端承载路径。
+    交互式智能引导用户挑选目标 VPS、远端承载路径及默认打开交互方式。
+    返回: (selected_host, remote_dir, launch_mode)
     """
     project_path = pathlib.Path(project_root).resolve()
     repo_name = project_path.name
@@ -210,7 +217,25 @@ def interactive_setup_binding(project_root: str, default_host: Optional[str] = N
             sys.exit(1)
         remote_dir = custom_dir if custom_dir else suggested_dir
 
-    # 3. 持久化保存记忆
-    set_project_binding(str(project_path), selected_host, remote_dir)
-    print(f"\n{Colors.GREEN}✔ 已成功绑定项目至 [{selected_host}:{remote_dir}]，后续运行无需重复配置！{Colors.RESET}")
-    return selected_host, remote_dir
+    # 3. 询问打开与交互方式
+    print(f"\n{Colors.YELLOW}❓ 请选择该工作区的默认打开与交互方式:{Colors.RESET}")
+    print(f"   [1] 🌐 CloudCLI Web 远程工作台 {Colors.GREEN}(推荐: 秒开浏览器，接收远端边缘广播并跳转深链){Colors.RESET}")
+    print(f"   [2] 💻 远端终端 AI Agent (进入交互式终端 Shell / OpenCode / CommandCode)")
+    print(f"   [3] ⚡ 仅后台静默同步 (纯后台无头同步，不弹出任何界面)")
+    try:
+        mode_input = input("\n请输入编号 [默认: 1]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print(f"\n{Colors.RED}已取消配置。{Colors.RESET}")
+        sys.exit(1)
+
+    if mode_input == "2":
+        launch_mode = "terminal"
+    elif mode_input == "3":
+        launch_mode = "silent"
+    else:
+        launch_mode = "cloudcli"
+
+    # 4. 持久化保存记忆
+    set_project_binding(str(project_path), selected_host, remote_dir, launch_mode=launch_mode)
+    print(f"\n{Colors.GREEN}✔ 已成功绑定项目至 [{selected_host}:{remote_dir}] (打开方式: {launch_mode})，后续运行无需重复配置！{Colors.RESET}")
+    return selected_host, remote_dir, launch_mode

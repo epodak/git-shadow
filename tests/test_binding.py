@@ -54,19 +54,39 @@ class TestBinding(unittest.TestCase):
         orig_func = binding_mod.get_bindings_file
         binding_mod.get_bindings_file = lambda: self.bindings_file
         try:
-            # 模拟用户在 VPS 和路径提示时均直接按回车
+            # 模拟用户在 VPS、路径、打开方式提示时均直接按回车
             with patch("git_shadow.binding.get_available_ssh_hosts", return_value=["aws", "tencent"]):
-                with patch("builtins.input", side_effect=["", ""]):
+                with patch("builtins.input", side_effect=["", "", ""]):
                     with patch("git_shadow.binding.probe_remote_target", return_value=(False, "~/wkspace/myproj")):
-                        host, r_dir = binding_mod.interactive_setup_binding(str(self.temp_dir), default_host="aws")
+                        host, r_dir, mode = binding_mod.interactive_setup_binding(str(self.temp_dir), default_host="aws")
                         self.assertEqual(host, "aws")
                         self.assertEqual(r_dir, "~/wkspace/myproj")
+                        self.assertEqual(mode, "cloudcli")
 
             # 验证自动持久化
             saved = binding_mod.get_project_binding(str(self.temp_dir))
             self.assertIsNotNone(saved)
             self.assertEqual(saved["host"], "aws")
             self.assertEqual(saved["remote_dir"], "~/wkspace/myproj")
+            self.assertEqual(saved["launch_mode"], "cloudcli")
+        finally:
+            binding_mod.get_bindings_file = orig_func
+
+    def test_interactive_setup_binding_custom_mode(self):
+        from unittest.mock import patch
+        import git_shadow.binding as binding_mod
+
+        orig_func = binding_mod.get_bindings_file
+        binding_mod.get_bindings_file = lambda: self.bindings_file
+        try:
+            # 模拟用户选择主机 1，路径回车，模式选择 3 (silent)
+            with patch("git_shadow.binding.get_available_ssh_hosts", return_value=["aws"]):
+                with patch("builtins.input", side_effect=["1", "", "3"]):
+                    with patch("git_shadow.binding.probe_remote_target", return_value=(False, "~/wkspace/test_silent")):
+                        host, r_dir, mode = binding_mod.interactive_setup_binding(str(self.temp_dir), default_host="aws")
+                        self.assertEqual(mode, "silent")
+            saved = binding_mod.get_project_binding(str(self.temp_dir))
+            self.assertEqual(saved["launch_mode"], "silent")
         finally:
             binding_mod.get_bindings_file = orig_func
 
