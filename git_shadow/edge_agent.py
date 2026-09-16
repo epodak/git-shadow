@@ -106,6 +106,7 @@ def run_checked(
     cwd: Optional[pathlib.Path] = None,
     input_data: Optional[bytes] = None,
     timeout: int = 900,
+    env: Optional[Dict[str, str]] = None,
 ) -> Tuple[str, str]:
     try:
         completed = subprocess.run(
@@ -116,6 +117,7 @@ def run_checked(
             stderr=subprocess.PIPE,
             timeout=timeout,
             check=False,
+            env=env,
         )
     except FileNotFoundError as exc:
         raise EdgeError("executable not found: %s" % argv[0]) from exc
@@ -519,32 +521,44 @@ class EdgeExecutor:
         preexisting = self._snapshot_workspace(target) if target.exists() and not (target / ".git").exists() else []
 
         if remote_url:
-            if not target.exists():
-                run_checked(["git", "clone", "--", remote_url, str(target)], timeout=1800)
-            elif not (target / ".git").exists():
-                if any(target.iterdir()):
-                    try:
-                        run_checked(["git", "init", "-b", branch], cwd=target)
-                    except EdgeError:
-                        run_checked(["git", "init"], cwd=target)
-                    run_checked(["git", "remote", "add", "origin", remote_url], cwd=target)
-                    run_checked(["git", "fetch", "origin"], cwd=target, timeout=900)
-                    self._clear_snapshot_paths(target, preexisting)
-                    try:
-                        run_checked(["git", "checkout", "-B", branch, "origin/" + branch], cwd=target, timeout=900)
-                    except Exception:
+            git_env = os.environ.copy()
+            git_env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
+            try:
+                if not target.exists():
+                    run_checked(["git", "clone", "--", remote_url, str(target)], timeout=60, env=git_env)
+                elif not (target / ".git").exists():
+                    if any(target.iterdir()):
+                        try:
+                            run_checked(["git", "init", "-b", branch], cwd=target)
+                        except EdgeError:
+                            run_checked(["git", "init"], cwd=target)
+                        run_checked(["git", "remote", "add", "origin", remote_url], cwd=target)
+                        run_checked(["git", "fetch", "origin"], cwd=target, timeout=60, env=git_env)
+                        self._clear_snapshot_paths(target, preexisting)
+                        try:
+                            run_checked(["git", "checkout", "-B", branch, "origin/" + branch], cwd=target, timeout=60)
+                        except Exception:
+                            self._restore_workspace(target, preexisting)
+                            raise
                         self._restore_workspace(target, preexisting)
-                        raise
-                    self._restore_workspace(target, preexisting)
+                    else:
+                        run_checked(["git", "clone", "--", remote_url, str(target)], timeout=60, env=git_env)
                 else:
-                    run_checked(["git", "clone", "--", remote_url, str(target)], timeout=1800)
-            else:
-                run_checked(["git", "fetch", "origin"], cwd=target, timeout=900)
-                run_checked(["git", "checkout", branch], cwd=target, timeout=900)
-            if (target / ".git").exists() and not (target / ".git" / "config").exists():
-                raise EdgeError("Git workspace was not initialized: %s" % target)
-            if pull:
-                run_checked(["git", "pull", "origin", branch], cwd=target, timeout=900)
+                    run_checked(["git", "fetch", "origin"], cwd=target, timeout=60, env=git_env)
+                    run_checked(["git", "checkout", branch], cwd=target, timeout=60)
+                if (target / ".git").exists() and not (target / ".git" / "config").exists():
+                    raise EdgeError("Git workspace was not initialized: %s" % target)
+                if pull:
+                    run_checked(["git", "pull", "origin", branch], cwd=target, timeout=60, env=git_env)
+            except EdgeError as exc:
+                err_msg = str(exc)
+                if "Permission denied" in err_msg or "publickey" in err_msg or "Host key verification failed" in err_msg:
+                    raise EdgeError(
+                        f"远端 Git 鉴权失败: 无法访问 {remote_url}。\n"
+                        f"👉 解决办法: 请在本地先运行一次 `git shadow auth sync {self.home.name}` (或目标主机) 同步 Git SSH 凭证。\n"
+                        f"详细错误: {err_msg}"
+                    ) from exc
+                raise
             self._restore_workspace(target, preexisting)
             return
 
@@ -942,6 +956,33 @@ class EdgeExecutor:
             sys.stderr.write(f"[edge-agent] 自动派发 CloudCLI JWT 凭证失败: {exc}\n")
             return None
 
+    def _get_providers(
+        self,
+        base_url: str,
+        bearer_override: Optional[str] = None,
+        api_key_override: Optional[str] = None,
+    ) -> List[str]:
+        request = urllib.request.Request(
+            base_url + "/api/providers",
+            headers=self._headers(bearer_override, api_key_override),
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=3) as response:
+                body = response.read().decode("utf-8", "replace")
+                data = json.loads(body)
+                if isinstance(data, list):
+                    res = []
+                    for item in data:
+                        if isinstance(item, dict) and "name" in item:
+                            res.append(str(item["name"]).strip().lower())
+                        elif isinstance(item, str):
+                            res.append(item.strip().lower())
+                    return [p for p in res if p]
+        except Exception:
+            pass
+        return []
+
     def _cloudcli_session(self, job_id: str, step: Dict[str, Any]) -> Dict[str, Any]:
         base_url = str(
             step.get("base_url")
@@ -967,6 +1008,19 @@ class EdgeExecutor:
         if not bearer_token and not api_key:
             bearer_token = self._auto_mint_cloudcli_token()
 
+        # 动态嗅探远端可用 providers 并自动协商降级
+        available = self._get_providers(base_url, bearer_token, api_key)
+        if available and provider.lower() not in available:
+            fallback = None
+            for cand in ("claude", "cursor", "opencode", "codex"):
+                if cand in available:
+                    fallback = cand
+                    break
+            if not fallback:
+                fallback = available[0]
+            sys.stderr.write(f"[edge-agent] 提示: 远端 CloudCLI 不支持 '{provider}'，已自动切换为 '{fallback}' (可用列表: {available})\n")
+            provider = fallback
+
         try:
             self._http_json(
                 base_url + "/api/projects/create-project",
@@ -977,16 +1031,34 @@ class EdgeExecutor:
         except EdgeError as exc:
             if "PROJECT_ALREADY_EXISTS" not in str(exc) and "already exists" not in str(exc).lower():
                 raise
-        session_response = self._http_json(
-            base_url + "/api/providers/sessions",
-            {
-                "provider": provider,
-                "projectPath": project_path_text,
-                "initialMessage": str(step.get("initial_message") or ""),
-            },
-            bearer_override=bearer_token,
-            api_key_override=api_key,
-        )
+
+        try:
+            session_response = self._http_json(
+                base_url + "/api/providers/sessions",
+                {
+                    "provider": provider,
+                    "projectPath": project_path_text,
+                    "initialMessage": str(step.get("initial_message") or ""),
+                },
+                bearer_override=bearer_token,
+                api_key_override=api_key,
+            )
+        except EdgeError as exc:
+            if "not available" in str(exc).lower() and provider.lower() != "claude":
+                sys.stderr.write(f"[edge-agent] 警告: Provider '{provider}' 创建会话失败，尝试降级至 'claude'...\n")
+                session_response = self._http_json(
+                    base_url + "/api/providers/sessions",
+                    {
+                        "provider": "claude",
+                        "projectPath": project_path_text,
+                        "initialMessage": str(step.get("initial_message") or ""),
+                    },
+                    bearer_override=bearer_token,
+                    api_key_override=api_key,
+                )
+                provider = "claude"
+            else:
+                raise
         session_id = session_response.get("sessionId")
         if not session_id and isinstance(session_response.get("data"), dict):
             session_id = session_response["data"].get("sessionId")

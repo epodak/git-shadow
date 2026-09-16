@@ -65,6 +65,7 @@ class ShadowEngine:
             "-o", "RemoteCommand=none",
             "-o", "RequestTTY=no",
             "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "ClearAllForwardings=yes",
             self.remote_host,
             remote_cmd
         ]
@@ -237,7 +238,7 @@ class ShadowEngine:
             if archive_proc.returncode == 0 and archive_proc.stdout:
                 workspace_step["archive_b64"] = base64.b64encode(archive_proc.stdout).decode("ascii")
         if include_cloudcli:
-            resolved_provider = (provider or os.environ.get("GIT_SHADOW_PROVIDER", "")).strip().lower() or "codex"
+            resolved_provider = (provider or os.environ.get("GIT_SHADOW_PROVIDER", "")).strip().lower() or "claude"
             session_step: Dict[str, Any] = {
                 "id": "cloudcli.session",
                 "action": "cloudcli.session",

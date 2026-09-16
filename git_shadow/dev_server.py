@@ -58,7 +58,7 @@ class ShadowDevServer:
         self.remote_host = remote_host
         self.remote_dir = remote_dir
         self.launch_mode = launch_mode
-        self.provider = (provider or os.environ.get("GIT_SHADOW_PROVIDER", "")).strip().lower() or "codex"
+        self.provider = (provider or os.environ.get("GIT_SHADOW_PROVIDER", "")).strip().lower() or "claude"
         self.with_wip = with_wip
         self.auto_open_browser = auto_open_browser
 
@@ -118,6 +118,14 @@ class ShadowDevServer:
         ev = event.get("event")
         evt_type = event.get("type")
 
+        step_desc_map = {
+            "cloudcli.session": "正在创建 CloudCLI 远程会话",
+            "workspace.prepare": "正在初始化远端工作区与代码基线",
+            "shadow.sync": "正在极速同步私有影子文件",
+            "shadow.pull": "正在拉取远端影子文件",
+            "patch.apply": "正在应用未提交补丁",
+        }
+
         if ev == "session.ready":
             url = event.get("url")
             if url:
@@ -129,13 +137,25 @@ class ShadowDevServer:
                     except Exception:
                         pass
         elif ev == "step.started":
-            step = event.get("step", "step")
-            log_hmr("remote", f"ℹ 远端步骤执行中: {step}", Colors.BLUE)
+            step = str(event.get("step") or "")
+            action = str(event.get("action") or "")
+            desc = step_desc_map.get(action) or step_desc_map.get(step) or f"执行步骤: {step}"
+            log_hmr("remote", f"ℹ {desc}...", Colors.BLUE)
         elif ev == "step.succeeded":
-            step = event.get("step", "step")
-            log_hmr("remote", f"✔ 远端步骤已完成: {step}", Colors.GREEN)
+            step = str(event.get("step") or "")
+            action = str(event.get("action") or "")
+            desc = step_desc_map.get(action) or step_desc_map.get(step) or f"步骤完成: {step}"
+            log_hmr("remote", f"✔ {desc}", Colors.GREEN)
+        elif ev == "step.retry":
+            step = str(event.get("step") or "")
+            attempt = event.get("attempt", 1)
+            err = str(event.get("error") or "")
+            log_hmr("retry", f"⚠ 步骤 {step} 重试 (第 {attempt} 次): {err[:120]}", Colors.YELLOW)
         elif ev == "job.completed":
-            log_hmr("edge", "✔ 边缘任务执行完毕", Colors.GREEN)
+            log_hmr("edge", "✔ 边缘同步任务执行完毕", Colors.GREEN)
+        elif ev == "job.failed":
+            err = str(event.get("error") or "未知错误")
+            log_hmr("edge", f"✖ 边缘任务失败: {err}", Colors.RED)
         elif ev == "shadow.remote":
             p = event.get("path", "")
             log_hmr("remote", f"📥 收到远端 Shadow 同步: {p}", Colors.BLUE)
