@@ -179,9 +179,9 @@ class RepoState:
                         for line in stream
                         if line.strip() and not line.strip().startswith("#")
                     ]
-            except Exception as exc:
-                log_warn(f"无法读取 .gitshadow 契约文件: {exc}")
-                return []
+            except (OSError, UnicodeDecodeError) as exc:
+                log_warn(f"无法读取 .gitshadow 契约文件 ({exc})，回退至安全默认白名单")
+                return list(DEFAULT_GITSHADOW_PATTERNS)
         self.has_custom_gitshadow = False
         return list(DEFAULT_GITSHADOW_PATTERNS)
 

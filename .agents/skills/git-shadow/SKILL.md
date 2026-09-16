@@ -5,13 +5,12 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 
 # git-shadow 智能体交互指南与操作速查
 
-`git-shadow` 当前个人模式是“跨平台本地控制端 → Linux VPS 远端执行端”的极速流式投影工具。它遵循**三态隔离公理**：
+`git-shadow` 是面向现代云端开发与 AI Coding Agent 的极速流式投影工具。它严格恪守**三态隔离公理**：
 1. **公有代码走 Git**（远端骨干网直接 clone/fetch 或本地 P2P 流式推送）；
 2. **私有配置走影子**（受 `.gitignore` 与 `.gitshadow` 保护的敏感文件通过按远端目标隔离的 Manifest/CAS 原子投影，禁止静默覆盖另一端修改）；
-3. **重型依赖走原生**（远端 Linux 宿主原生安装，绝不跨平台对拷）。
+3. **重型依赖走原生**（远端 Linux 宿主原生就地安装，绝不跨平台对拷）。
 
-分层同步的硬边界：Git 追踪文件只交给 Git；`.gitshadow` 文件只交给 Shadow Manifest/CAS；未提交追踪文件默认不同步，只有显式 `--wip` 才作为一次性补丁投影。
-普通文件夹也可以创建 CloudCLI Session 和远端空工作区；仅 Git lane（Git pull、auth sync）要求当前目录已有 Git 仓库。
+分层同步硬边界：Git 追踪文件只交给 Git；`.gitshadow` 文件只交给 Shadow Manifest/CAS；未提交追踪文件默认不同步（只有显式 `--wip` 才作为一次性补丁投影）。
 
 ---
 
@@ -29,11 +28,24 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 | **Git 鉴权与身份治理** | `git shadow auth sync <host>` | 遵循 Diff-First 契约，净化同步本地 SSH 密钥到远端，打通 GitHub 权限并对齐提交人信息 |
 | **投影前本地自检** | `git shadow diff` | 高保真树状图 (Diff Tree) 扫描待投影的私有影子文件与 WIP 代码修改 |
 | **收割远端 AI 产出** | `git shadow pull <host>` | 从远端 Git 仓库拉取最新 commit 到本地 |
+| **收割包含影子配置改动** | `git shadow pull <host> --with-shadows` | 同步拉回远端修改的 `.gitshadow` 私密文件；若发生冲突隔离生成 `.remote` 文件 |
 | **纯静默后台推送** | `git shadow push <host>` | 仅推送代码基线与影子，不进入交互式终端，不弹窗 |
 | **手动终端远程调试** | `git shadow up <host>` | 投影后直接进入交互式 Remote Shell |
 | **安装 VPS 边缘执行器** | `git shadow edge install <host>` | 上传独立 JSONL 执行器，不要求远端安装 Python 包 |
 | **查询/恢复远端任务** | `git shadow edge status <host> <job>` / `edge resume <host> <job>` | 查询 Job 状态或按 seq 重放事件 |
 
+---
+
+## 📚 专项治理与深度 SOP (References)
+
+对于特定复杂场景与异常恢复，查阅对应的专项深度文档：
+
+- **CAS 并发冲突处理与三方合并**：👉 [CAS_CONFLICT_RESOLUTION.md](file:///d:/_AI/10_DOING/2026-09-15_git-shadow/.agents/skills/git-shadow/references/CAS_CONFLICT_RESOLUTION.md)
+  *覆盖：Base Hash 失配告警、`.remote` 隔离生成、手动/双栏比对合并与基线更新 SOP。*
+- **CloudCLI 鉴权自愈与深链挂载**：👉 [CLOUDCLI_DEEPLINK_AUTH.md](file:///d:/_AI/10_DOING/2026-09-15_git-shadow/.agents/skills/git-shadow/references/CLOUDCLI_DEEPLINK_AUTH.md)
+  *覆盖：401 令牌过期读取 `auth.db` 离线签发 7 天 HS256 JWT、409 项目存在幂等复用、乐观深链。*
+- **持续自动同步与租约自毁**：👉 [CONTINUOUS_SILENT_SYNC.md](file:///d:/_AI/10_DOING/2026-09-15_git-shadow/.agents/skills/git-shadow/references/CONTINUOUS_SILENT_SYNC.md)
+  *覆盖：10 分钟 Lease 超时内存回收、Windows/Linux 监听机制差异、双端 Edge 对称演进路线。*
 
 ---
 
@@ -43,7 +55,6 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 
 ### 0. CLI 注册原理与 Git 原生子命令发现 (Git Subcommand Discovery)
 - **子命令发现机制**：`git shadow` 能够全局直接运行，依赖 Git 的原生扩展发现机制——当敲击 `git shadow` 时，Git 会自动从系统 `$PATH` 中定位可执行的 `git-shadow`（或 `git-shadow.cmd`）并透传全部参数；
-- **全终端免安装包装模式**：在全终端管理体系中（如 `D:/Tool/DIY` 或 `~/.local/bin`），建议采用注入 `PYTHONPATH` 的双子包装器（`git-shadow` + `git-shadow.cmd`），既不污染 Python 全局环境，又实现本地代码修改即刻热生效；
 - **关键避坑：`--help` 陷阱**：严禁调用 `git shadow --help`（Git 会尝试检索内置 HTML 手册导致报 `documentation file not found` 错误）；查看全部命令时必须使用：
   ```bash
   git shadow -h
@@ -62,17 +73,6 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
   ssh -o RemoteCommand=none -o RequestTTY=no <host> "<cmd>"
   ```
   彻底杜绝终端多路复用器拦截后台自动化管道。
-
-### 2.1 VPS 边缘执行器与异步广播 (Remote Edge Executor)
-- 长任务不得由本地逐条等待 SSH 返回；本地将结构化 `TypedExecutionPlan` 一次提交给 VPS 边缘执行器。
-- 传输使用同一条干净 SSH 通道上的双向 JSONL：提交同步返回 `accepted + job_id`，执行过程异步广播 `step.started`、`output`、`session.ready`、`job.completed` 或 `job.failed`。
-- VPS 为每个 Job 持久化脱敏的 `request.json`、`state.json` 和带单调 `seq` 的 `events.ndjson`；本地断线后必须使用 `resume + after_seq` 重放，不得重新猜测最新会话。
-- 默认只允许结构化动作（`workspace.create`、`cloudcli.session`、`workspace.prepare`、`shadow.sync` 和 argv 数组形式的 `exec`），禁止无校验的 Shell 命令串拼接；`patch.apply` 仅在用户显式传入 `--wip` 时出现。
-- `workspace.create` 后立即创建 CloudCLI Session；随后 `workspace.prepare` 才执行 Git clone/init/checkout，`shadow.sync` 和 `shadow.pull` 携带 `base_hash/local_hash` 并由 VPS 执行 CAS。若 CAS 冲突，任务必须广播失败，禁止伪造“工作区已准备完成”或重复创建 Session。
-- CloudCLI 会话必须由同一个远端 Job 明确创建，收到 `session.ready` 后才打开 `/session/<id>`；禁止直接扫描 SQLite 选择“最新会话”。
-- CloudCLI provider 必须在 Session 创建前确定；命令行使用 `--provider`，交互模式使用本地菜单。当前数据库 provider 非空，不创建 provider-neutral 临时 Session。
-- 短任务完成即退出；长期服务继续遵循 600 秒 Lease 心跳和超时自毁契约。
-- `service-agent` 是 VPS 任务承载端，不是本地工作区 watcher；双向 Shadow 自动同步必须由本地 `--watch` 发现变化，再通过服务执行 CAS。Linux 本地使用 inotify，其他平台回退轮询。Git 追踪代码仍走 Git，`--watch` 只在本地干净时执行 `fetch + merge --ff-only`，本地有修改就暂停并提示。
 
 ### 3. `.gitshadow` 显式白名单契约 (No Blackbox)
 - 严禁在底层 Python 代码中硬编码排除黑名单（如私自排除 `_dev_log/`）；
@@ -116,22 +116,11 @@ git shadow service aws status
 git shadow service aws unload
 ```
 
-### 场景 C：VPS 批量执行并打开 CloudCLI 深链
+### 场景 C：收割远端改动与冲突处理
 ```bash
-# 首次使用：上传独立的 VPS 边缘执行器
-git shadow edge install aws
+# 从远端拉回 Git 代码与影子文件
+git shadow pull aws --with-shadows
 
-# 一次提交 Git 基线、Shadow CAS 和 CloudCLI 会话任务
-git shadow run aws cloudcli --provider codex
-
-# 断线后查看或重放任务事件
-git shadow edge status aws <job-id>
-git shadow edge resume aws <job-id>
-
-# 如确实需要把未提交追踪代码临时交给远端 Agent，必须显式开启
-git shadow run aws cloudcli --provider codex --wip
+# 若出现 CAS 冲突，按提示合并 .remote 文件后重新推送
+git shadow push aws
 ```
-
-VPS 上的 CloudCLI 内部地址默认是 `http://127.0.0.1:3001`，可通过 `--cloudcli-url` 或 `GIT_SHADOW_CLOUDCLI_BASE_URL` 覆盖。一次性个人任务可在控制端设置 `GIT_SHADOW_CLOUDCLI_TOKEN`，它只随加密 SSH 计划传输并在远端持久化元数据中脱敏；常驻 service 则应在 VPS 环境设置 `GIT_SHADOW_CLOUDCLI_TOKEN` / `GIT_SHADOW_CLOUDCLI_API_KEY`。凭证绝不进入工作区、任务事件或日志。
-
-Node 生态统一使用 pnpm：新 VPS 先执行 `corepack enable pnpm`，再用 `pnpm add --global @cloudcli-ai/cloudcli@<pinned-version>` 安装 CloudCLI；不要在项目工作区生成 `package-lock.json`，也不要把 npm 项目依赖混入跨端投影。

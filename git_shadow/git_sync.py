@@ -10,6 +10,8 @@ from __future__ import annotations
 import subprocess
 from typing import Dict, List
 
+from .utils import NO_WINDOW_FLAG
+
 
 def _run_git(root: str, args: List[str]) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -21,6 +23,7 @@ def _run_git(root: str, args: List[str]) -> subprocess.CompletedProcess:
         encoding="utf-8",
         errors="replace",
         check=False,
+        creationflags=NO_WINDOW_FLAG,
     )
 
 

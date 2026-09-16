@@ -14,7 +14,7 @@ import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
-from .utils import log_info, log_success, log_warn
+from .utils import log_info, log_success, log_warn, NO_WINDOW_FLAG
 
 
 EventHandler = Callable[[Dict[str, Any]], None]
@@ -70,6 +70,7 @@ class EdgeClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            creationflags=NO_WINDOW_FLAG,
         )
 
     def ensure_installed(self) -> bool:
@@ -129,6 +130,7 @@ class EdgeClient:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            creationflags=NO_WINDOW_FLAG,
         )
 
     def _send(self, process: subprocess.Popen, message: Dict[str, Any]) -> None:

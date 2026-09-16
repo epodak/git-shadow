@@ -25,6 +25,7 @@ from .probe import RemoteProbe
 from .auth import AuthManager
 from .tree import DiffTreeRenderer
 from .git_sync import auto_fast_forward_pull
+from .daemon import LocalDaemonManager
 from .utils import (
     log_info,
     log_success,
@@ -65,6 +66,10 @@ def print_help():
   {Colors.GREEN}edge status <host> <job>{Colors.RESET} 查询远端任务状态
   {Colors.GREEN}edge resume <host> <job>{Colors.RESET} 断线后按事件序号恢复任务输出
   {Colors.GREEN}install [dir]{Colors.RESET}     安装本地 git-shadow / git-shadow.cmd wrapper（默认 ~/.local/bin）
+  {Colors.GREEN}daemon start <host>{Colors.RESET}   启动当前项目本地后台守护进程 (Session 1 无黑框，脱离终端)
+  {Colors.GREEN}daemon stop{Colors.RESET}           停止当前项目本地后台守护进程 (快捷别名: git shadow stop)
+  {Colors.GREEN}daemon status{Colors.RESET}         查看本地后台守护进程状态与最新日志 (快捷别名: git shadow status)
+  {Colors.GREEN}watch <host>{Colors.RESET}          按需开启本地后台同步 (默认后台运行；加 -f 在前台运行)
   {Colors.GREEN}service <host> load|status|unload{Colors.RESET} 管理项目级 VPS 常驻边缘服务
   {Colors.GREEN}run/push/pull/up ... --service{Colors.RESET} 通过常驻服务提交任务，断开后可恢复
   {Colors.GREEN}run <host> [agent] --watch{Colors.RESET} 持续双向同步 .gitshadow，并对干净 Git 分支自动 ff-only 拉取
@@ -202,6 +207,88 @@ def cmd_diff(repo: RepoState):
                 print(f"  {Colors.DIM}{l}{Colors.RESET}")
 
 
+def cmd_daemon_status(project_root: str):
+    repo = RepoState(project_root)
+    mgr = LocalDaemonManager(repo.root_dir)
+    res = mgr.status()
+    print(f"\n{Colors.BOLD}======================================================================{Colors.RESET}")
+    print(f"{Colors.BOLD} 🚀 git-shadow 本地守护进程状态 (Local Daemon Status){Colors.RESET}")
+    print(f"{Colors.BOLD}======================================================================{Colors.RESET}")
+    print(f" • 项目路径: {Colors.CYAN}{repo.root_dir}{Colors.RESET}")
+    if res["running"] and res.get("info"):
+        info = res["info"]
+        is_zombie = info.get("is_zombie", False)
+        hb_age = info.get("heartbeat_age")
+        has_errors = res.get("has_errors", False)
+
+        if is_zombie:
+            hb_str = f"（心跳中断 {int(hb_age)}s）" if hb_age is not None else ""
+            print(f" • 运行状态: {Colors.RED}🔴 异常僵死 (PID: {info.get('pid')}{hb_str}){Colors.RESET}")
+        elif has_errors:
+            hb_str = f" (心跳: {int(hb_age)}s 前)" if hb_age is not None else ""
+            print(f" • 运行状态: {Colors.YELLOW}🟡 运行中但有告警 (PID: {info.get('pid')}{hb_str}，请检查下方日志){Colors.RESET}")
+        else:
+            hb_str = f" (心跳正常: {int(hb_age)}s 前)" if hb_age is not None else ""
+            print(f" • 运行状态: {Colors.GREEN}🟢 健康运行中 (PID: {info.get('pid')}{hb_str}){Colors.RESET}")
+        print(f" • 目标主机: {Colors.CYAN}{info.get('host')}{Colors.RESET}")
+        print(f" • 启动时间: {info.get('started_at')}")
+        print(f" • 日志文件: {Colors.DIM}{res.get('log_file')}{Colors.RESET}")
+        print(f"\n{Colors.BOLD}【最新运行日志 (最近 15 行)】:{Colors.RESET}")
+        print("-" * 70)
+        logs = res.get("recent_logs", [])
+        if logs:
+            for line in logs:
+                print(f"  {line}")
+        else:
+            print(f"  {Colors.DIM}(暂无日志内容){Colors.RESET}")
+    else:
+        print(f" • 运行状态: {Colors.YELLOW}🔴 未运行 (无活跃守护进程){Colors.RESET}")
+        print(f" • 提示: 可执行 `git shadow watch <host>` 或 `git shadow daemon start <host>` 开启后台同步。")
+    print(f"{Colors.BOLD}======================================================================{Colors.RESET}\n")
+
+
+def cmd_daemon_stop(project_root: str):
+    repo = RepoState(project_root)
+    mgr = LocalDaemonManager(repo.root_dir)
+    res = mgr.stop()
+    if res["status"] == "stopped":
+        log_success(f"已停止本地后台守护进程 (PID: {res.get('pid')})")
+    else:
+        log_info("当前项目未检测到运行中的本地守护进程。")
+
+
+def cmd_daemon_start(
+    project_root: str,
+    host: str,
+    shadow_interval: float = 10.0,
+    git_interval: float = 10.0,
+    no_git_pull: bool = False,
+):
+    repo = RepoState(project_root)
+    mgr = LocalDaemonManager(repo.root_dir)
+    extra_args = []
+    if no_git_pull:
+        extra_args.append("--no-git-pull")
+    res = mgr.start(
+        remote_host=host,
+        extra_args=extra_args,
+        shadow_pull_interval=shadow_interval,
+        git_pull_interval=git_interval,
+    )
+    if res["status"] == "already_running":
+        log_warn(f"本地守护进程已在运行中 (PID: {res.get('pid')}, 目标: {res.get('host')})")
+        log_info("查看状态与日志: git shadow status")
+        log_info("停止当前守护:   git shadow stop")
+        return
+    log_success(f"git-shadow 本地后台守护进程已在当前用户 Session 启动 (PID: {res.get('pid')})")
+    print(f"  • 目标主机: {Colors.CYAN}{host}{Colors.RESET}")
+    print(f"  • 监控目录: {Colors.CYAN}{repo.root_dir}{Colors.RESET}")
+    print(f"  • 运行日志: {Colors.DIM}{res.get('log_file')}{Colors.RESET}")
+    print(f"\n{Colors.BOLD}💡 常用管理命令:{Colors.RESET}")
+    print(f"  • 查看状态与日志: {Colors.GREEN}git shadow status{Colors.RESET} (或 git shadow daemon status)")
+    print(f"  • 停止后台同步:   {Colors.GREEN}git shadow stop{Colors.RESET}   (或 git shadow daemon stop)\n")
+
+
 def main(args: Optional[List[str]] = None):
     if args is None:
         args = sys.argv[1:]
@@ -323,39 +410,134 @@ def main(args: Optional[List[str]] = None):
             log_error("VPS 常驻服务操作失败: %s" % exc)
             sys.exit(1)
 
-    # 其余命令需要解析标准选项
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("host", help="目标远程主机 (SSH Host)")
-    parser.add_argument("extra_args", nargs="*", help="额外参数或执行命令")
-    parser.add_argument("-d", "--dest", default=None, help="远端目标路径")
-    parser.add_argument("--wip", action="store_true", help="显式传输未提交修改（一次性 WIP 补丁）")
-    parser.add_argument("--no-wip", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--watch", action="store_true", help="持续监听 .gitshadow 变化")
-    parser.add_argument("--git-pull-interval", type=float, default=10.0, help="--watch 时 Git 自动拉取间隔（秒）")
-    parser.add_argument("--no-git-pull", action="store_true", help="--watch 时关闭 Git 自动拉取")
-    parser.add_argument("--service", action="store_true", help="使用项目级 VPS 常驻服务")
-    parser.add_argument("--pull", action="store_true", help="远端强制拉取")
-    parser.add_argument("--with-shadows", action="store_true", help="pull 时同步已登记的远端 Shadow 文件")
-    parser.add_argument("-a", "--agent", default=None, help="远端 AI Agent 命令")
-    parser.add_argument("--provider", default=None, help="CloudCLI AI 供应商: codex/claude/cursor/opencode")
-    parser.add_argument("--cloudcli-url", default=None, help="VPS 内部 CloudCLI 地址，默认读取 GIT_SHADOW_CLOUDCLI_BASE_URL")
+    # 3.7 本地用户级守护进程治理 (git shadow daemon start/stop/status)
+    if subcmd in ("daemon", "local-daemon"):
+        if not sub_args:
+            log_error("用法: git shadow daemon start <host> | daemon stop | daemon status")
+            sys.exit(1)
+        daemon_action = sub_args[0]
+        repo = RepoState(".")
 
-    try:
-        opts, remaining = parser.parse_known_args(sub_args)
-    except Exception as e:
-        log_error(f"参数解析错误: {e}")
-        print_help()
-        sys.exit(1)
-
-    repo = RepoState(".")
-    if not repo.is_git:
-        if subcmd not in ("run", "push", "up", "pull", "web"):
-            log_error("当前命令需要一个有效的 Git 仓库；run/push/up/pull 可用于普通文件夹。")
+        if daemon_action == "start":
+            if len(sub_args) < 2:
+                log_error("用法: git shadow daemon start <host>")
+                sys.exit(1)
+            target_host = sub_args[1]
+            cmd_daemon_start(repo.root_dir, target_host)
+            sys.exit(0)
+        elif daemon_action == "stop":
+            cmd_daemon_stop(repo.root_dir)
+            sys.exit(0)
+        elif daemon_action == "status":
+            cmd_daemon_status(repo.root_dir)
+            sys.exit(0)
+        else:
+            log_error("未知 daemon 操作: %s (支持: start, stop, status)" % daemon_action)
             sys.exit(1)
 
-    remote_host = opts.host
-    remote_dir = opts.dest
-    with_wip = bool(opts.wip and not opts.no_wip)
+    # 快捷别名: git shadow status
+    if subcmd == "status":
+        repo = RepoState(".")
+        cmd_daemon_status(repo.root_dir)
+        sys.exit(0)
+
+    # 快捷别名: git shadow stop
+    if subcmd == "stop":
+        repo = RepoState(".")
+        cmd_daemon_stop(repo.root_dir)
+        sys.exit(0)
+
+    # 按需 watch 命令 (默认后台，带 -f / --foreground 则前台)
+    if subcmd == "watch":
+        if not sub_args or sub_args[0] in ("-h", "--help"):
+            log_error("用法: git shadow watch <host> [-f|--foreground]")
+            sys.exit(1)
+        target_host = sub_args[0]
+        is_fg = ("-f" in sub_args or "--foreground" in sub_args)
+        if not is_fg:
+            repo = RepoState(".")
+            cmd_daemon_start(repo.root_dir, target_host)
+            sys.exit(0)
+        sub_args = [a for a in sub_args if a not in ("-f", "--foreground")]
+
+    # 内部后台工作进程入口 (_daemon_worker)
+    is_worker = (subcmd == "_daemon_worker")
+    if is_worker:
+        if len(sub_args) < 2:
+            sys.exit(1)
+        target_host = sub_args[0]
+        worker_root = sub_args[1]
+
+        parser_w = argparse.ArgumentParser(add_help=False)
+        parser_w.add_argument("--log-file", default=None)
+        parser_w.add_argument("--shadow-pull-interval", type=float, default=10.0)
+        parser_w.add_argument("--git-pull-interval", type=float, default=10.0)
+        parser_w.add_argument("--no-git-pull", action="store_true")
+        w_opts, _ = parser_w.parse_known_args(sub_args[2:])
+
+        if w_opts.log_file:
+            log_fh = open(w_opts.log_file, "a", encoding="utf-8", buffering=1, errors="replace")
+            sys.stdout = log_fh
+            sys.stderr = log_fh
+            import datetime
+            print(f"\n[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] === git-shadow 本地守护进程启动 (目标主机: {target_host}, PID: {os.getpid()}) ===", flush=True)
+
+        opts = argparse.Namespace(
+            host=target_host,
+            extra_args=[],
+            dest=None,
+            wip=False,
+            no_wip=True,
+            watch=True,
+            git_pull_interval=w_opts.git_pull_interval,
+            shadow_pull_interval=w_opts.shadow_pull_interval,
+            no_git_pull=w_opts.no_git_pull,
+            service=False,
+            pull=False,
+            with_shadows=False,
+            agent=None,
+            provider=None,
+            cloudcli_url=None,
+        )
+        repo = RepoState(worker_root)
+        remote_host = target_host
+        remote_dir = None
+        with_wip = False
+    else:
+        # 其余命令需要解析标准选项
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("host", help="目标远程主机 (SSH Host)")
+        parser.add_argument("extra_args", nargs="*", help="额外参数或执行命令")
+        parser.add_argument("-d", "--dest", default=None, help="远端目标路径")
+        parser.add_argument("--wip", action="store_true", help="显式传输未提交修改（一次性 WIP 补丁）")
+        parser.add_argument("--no-wip", action="store_true", help=argparse.SUPPRESS)
+        parser.add_argument("--watch", action="store_true", help="持续监听 .gitshadow 变化")
+        parser.add_argument("--shadow-pull-interval", type=float, default=10.0, help="--watch 时 Shadow 自动拉取间隔（秒）")
+        parser.add_argument("--git-pull-interval", type=float, default=10.0, help="--watch 时 Git 自动拉取间隔（秒）")
+        parser.add_argument("--no-git-pull", action="store_true", help="--watch 时关闭 Git 自动拉取")
+        parser.add_argument("--service", action="store_true", help="使用项目级 VPS 常驻服务")
+        parser.add_argument("--pull", action="store_true", help="远端强制拉取")
+        parser.add_argument("--with-shadows", action="store_true", help="pull 时同步已登记的远端 Shadow 文件")
+        parser.add_argument("-a", "--agent", default=None, help="远端 AI Agent 命令")
+        parser.add_argument("--provider", default=None, help="CloudCLI AI 供应商: codex/claude/cursor/opencode")
+        parser.add_argument("--cloudcli-url", default=None, help="VPS 内部 CloudCLI 地址，默认读取 GIT_SHADOW_CLOUDCLI_BASE_URL")
+
+        try:
+            opts, remaining = parser.parse_known_args(sub_args)
+        except Exception as e:
+            log_error(f"参数解析错误: {e}")
+            print_help()
+            sys.exit(1)
+
+        repo = RepoState(".")
+        if not repo.is_git:
+            if subcmd not in ("run", "push", "up", "pull", "web", "watch"):
+                log_error("当前命令需要一个有效的 Git 仓库；run/push/up/pull/watch 可用于普通文件夹。")
+                sys.exit(1)
+
+        remote_host = opts.host
+        remote_dir = opts.dest
+        with_wip = bool(opts.wip and not opts.no_wip)
 
     engine = ShadowEngine(
         repo=repo,
@@ -454,21 +636,29 @@ def main(args: Optional[List[str]] = None):
         """Watch Shadow and safely fast-forward the Git lane from its remote."""
         stop_event = stop_event or threading.Event()
         previous = shadow_snapshot()
-        last_pull = 0.0
-        last_git_pull = 0.0
+        now = time.monotonic()
+        # 初始 last_pull 设为当前时间，给本地优先 Push 留出窗口，绝不让启动瞬间的 Pull 冲掉待同步文件
+        last_pull = now
+        last_git_pull = now
         git_pull_blocked = False
         git_pull_interval = max(2.0, float(opts.git_pull_interval))
+        shadow_pull_interval = max(3.0, float(getattr(opts, "shadow_pull_interval", 10.0)))
         log_info("已进入个人持续同步：.gitshadow 自动双向 CAS，Git 仅对干净分支执行 ff-only 自动拉取。")
+        daemon_mgr = LocalDaemonManager(repo.root_dir)
+        daemon_mgr.touch_heartbeat()
         with LocalChangeWatcher(repo.root_dir) as local_watcher:
             if local_watcher.native:
-                log_info("本地使用 Linux inotify 监听 .gitshadow；不支持时自动回退轮询。")
+                log_info("本地使用原生文件系统事件监听 (Linux inotify / Windows ChangeNotification)。")
             try:
                 while not stop_event.is_set():
-                    notified = local_watcher.wait_for_quiet(0.3) if local_watcher.native else local_watcher.wait(0.3)
+                    daemon_mgr.touch_heartbeat()
+                    notified = local_watcher.wait_for_quiet(0.5) if local_watcher.native else local_watcher.wait(0.5)
                     if stop_event.is_set():
                         break
                     now = time.monotonic()
                     current = shadow_snapshot() if (not local_watcher.native or notified) else previous
+                    
+                    # 1. 本地优先：检测到本地影子文件改动，立即推送到远端 (Local -> Remote Push)
                     if current != previous:
                         try:
                             submit_projection(include_cloudcli=False)
@@ -478,12 +668,21 @@ def main(args: Optional[List[str]] = None):
                             log_error("Shadow 自动同步失败（保留当前基线，稍后重试）: %s" % exc)
                             time.sleep(1.0)
                         continue
-                    if now - last_pull < 2.0:
-                        pass
-                    else:
+
+                    # 2. 定周期远端探查：拉取远端变更 (Remote -> Local Pull)
+                    if now - last_pull >= shadow_pull_interval:
                         try:
+                            pre_pull_snap = shadow_snapshot()
                             submit_shadow_pull()
-                            previous = shadow_snapshot()
+                            post_pull_snap = shadow_snapshot()
+                            # 仅将远端真正写入本地成功的文件合入 previous；
+                            # 如果本地在此期间有修改，保留差异以在下轮循环立即 push
+                            for p, h in post_pull_snap.items():
+                                if pre_pull_snap.get(p) != h:
+                                    previous[p] = h
+                            for p in list(previous.keys()):
+                                if p in pre_pull_snap and p not in post_pull_snap:
+                                    previous.pop(p, None)
                             last_pull = now
                         except Exception as exc:
                             log_error("远端 Shadow 自动拉取失败（稍后重试）: %s" % exc)
@@ -628,6 +827,11 @@ def main(args: Optional[List[str]] = None):
                 watcher.join(timeout=2)
         else:
             engine.launch_agent_or_shell(agent_cmd=opts.agent)
+
+    # 7.5 watch 命令前台执行 / _daemon_worker
+    elif subcmd in ("watch", "_daemon_worker"):
+        watch_shadow()
+        sys.exit(0)
 
     # 8. pull 命令：本地拉取
     elif subcmd == "pull":

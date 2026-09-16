@@ -40,6 +40,10 @@ def log_step(step: int, total: int, msg: str):
     print(f"\n{Colors.BOLD}{Colors.BLUE}[{step}/{total}]{Colors.RESET} {Colors.BOLD}{msg}{Colors.RESET}", flush=True)
 
 
+# Windows 下防止任何后台子进程（ssh.exe / git.exe）弹出瞬态控制台黑框
+NO_WINDOW_FLAG = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+
+
 def run_cmd(
     cmd: List[str],
     cwd: Optional[str] = None,
@@ -55,7 +59,8 @@ def run_cmd(
             stderr=subprocess.PIPE if capture else None,
             text=True,
             encoding="utf-8",
-            errors="replace"
+            errors="replace",
+            creationflags=NO_WINDOW_FLAG,
         )
         if check and proc.returncode != 0:
             err_msg = proc.stderr if capture else f"Command failed with code {proc.returncode}"

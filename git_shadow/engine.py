@@ -19,7 +19,8 @@ from .utils import (
     log_warn,
     log_error,
     log_step,
-    Colors
+    Colors,
+    NO_WINDOW_FLAG,
 )
 
 class ShadowEngine:
@@ -75,7 +76,8 @@ class ShadowEngine:
             text=False if input_data and isinstance(input_data, bytes) else True,
             encoding=None if input_data and isinstance(input_data, bytes) else "utf-8",
             errors=None if input_data and isinstance(input_data, bytes) else "replace",
-            check=check
+            check=check,
+            creationflags=NO_WINDOW_FLAG,
         )
 
     def resolve_remote_dir(self, probe_ws_dir: Optional[str] = None) -> str:

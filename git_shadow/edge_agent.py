@@ -459,7 +459,10 @@ class EdgeExecutor:
 
         def terminate_and_reap() -> None:
             try:
-                os.killpg(process.pid, signal.SIGTERM)
+                if hasattr(os, "killpg"):
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.terminate()
             except OSError:
                 try:
                     process.kill()
@@ -935,7 +938,8 @@ class EdgeExecutor:
             message = f"{header}.{payload}".encode("ascii")
             sig = b64url(hmac.new(jwt_secret.encode("utf-8"), message, hashlib.sha256).digest())
             return f"{header}.{payload}.{sig}"
-        except Exception:
+        except (sqlite3.Error, KeyError, ValueError, OSError) as exc:
+            sys.stderr.write(f"[edge-agent] 自动派发 CloudCLI JWT 凭证失败: {exc}\n")
             return None
 
     def _cloudcli_session(self, job_id: str, step: Dict[str, Any]) -> Dict[str, Any]:

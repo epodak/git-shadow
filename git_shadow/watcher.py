@@ -48,9 +48,25 @@ class LocalChangeWatcher:
         self.fd: Optional[int] = None
         self.native = False
         self._watches: Dict[int, pathlib.Path] = {}
-        self._libc = None
+        self._win_handle = None
+        self._kernel32 = None
 
     def __enter__(self) -> "LocalChangeWatcher":
+        # Windows 原生文件系统事件通知 (零轮询开销)
+        if sys.platform == "win32":
+            try:
+                self._kernel32 = ctypes.windll.kernel32
+                WIN_WATCH_MASK = 0x00000001 | 0x00000002 | 0x00000010 | 0x00000008
+                handle = self._kernel32.FindFirstChangeNotificationW(str(self.root), True, WIN_WATCH_MASK)
+                if handle and handle != -1:
+                    self._win_handle = handle
+                    self.native = True
+            except Exception:
+                self._win_handle = None
+                self.native = False
+            return self
+
+        # Linux inotify 原生事件通知
         if sys.platform != "linux":
             return self
         try:
@@ -116,6 +132,16 @@ class LocalChangeWatcher:
 
     def wait(self, timeout: float) -> bool:
         """Return whether the filesystem emitted an event during the wait."""
+        # Windows 原生事件等待
+        if sys.platform == "win32" and self.native and self._win_handle and self._kernel32:
+            ms = int(max(0.0, timeout) * 1000)
+            res = self._kernel32.WaitForSingleObject(self._win_handle, ms)
+            if res == 0:  # WAIT_OBJECT_0
+                self._kernel32.FindNextChangeNotification(self._win_handle)
+                return True
+            return False
+
+        # Linux inotify 事件等待
         if not self.native or self.fd is None:
             time.sleep(max(0.0, timeout))
             return False
@@ -140,6 +166,12 @@ class LocalChangeWatcher:
         return True
 
     def close(self) -> None:
+        if self._win_handle and self._kernel32:
+            try:
+                self._kernel32.FindCloseChangeNotification(self._win_handle)
+            except Exception:
+                pass
+            self._win_handle = None
         if self.fd is not None:
             try:
                 os.close(self.fd)

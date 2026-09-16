@@ -271,7 +271,7 @@ class TestEdgeProtocol(unittest.TestCase):
         target = self.workspace / "project"
         target.mkdir()
         shadow_path = target / ".env"
-        shadow_path.write_text("REMOTE_BASE\n", encoding="utf-8")
+        shadow_path.write_bytes(b"REMOTE_BASE\n")
         payload = b"LOCAL_NEXT\n"
         executor = EdgeExecutor(str(self.state_dir / "state-cas-apply"))
         try:
