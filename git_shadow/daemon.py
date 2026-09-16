@@ -53,9 +53,19 @@ def is_process_alive(pid: int) -> bool:
     else:
         try:
             os.kill(pid, 0)
-            return True
         except OSError:
             return False
+
+        # POSIX 进程身份与防复用校验：核验 /proc/<pid>/cmdline 是否确为 git-shadow 或 python
+        cmdline_path = pathlib.Path(f"/proc/{pid}/cmdline")
+        try:
+            if cmdline_path.exists():
+                cmdline = cmdline_path.read_bytes().replace(b"\0", b" ").lower()
+                if not (b"git_shadow" in cmdline or b"git-shadow" in cmdline or b"python" in cmdline):
+                    return False
+        except (OSError, PermissionError):
+            pass
+        return True
 
 
 class LocalDaemonManager:
@@ -240,6 +250,9 @@ class LocalDaemonManager:
         """优雅停止后台守护进程"""
         running, info = self.is_running()
         if not running or not info:
+            if self.pid_file.exists():
+                self._cleanup()
+                return {"status": "stale_cleaned"}
             return {"status": "not_running"}
 
         pid = info["pid"]

@@ -40,11 +40,11 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 
 对于特定复杂场景与异常恢复，查阅对应的专项深度文档：
 
-- **CAS 并发冲突处理与三方合并**：👉 [CAS_CONFLICT_RESOLUTION.md](file:///d:/_AI/10_DOING/2026-09-15_git-shadow/.agents/skills/git-shadow/references/CAS_CONFLICT_RESOLUTION.md)
+- **CAS 并发冲突处理与三方合并**：👉 [CAS_CONFLICT_RESOLUTION.md](references/CAS_CONFLICT_RESOLUTION.md)
   *覆盖：Base Hash 失配告警、`.remote` 隔离生成、手动/双栏比对合并与基线更新 SOP。*
-- **CloudCLI 鉴权自愈与深链挂载**：👉 [CLOUDCLI_DEEPLINK_AUTH.md](file:///d:/_AI/10_DOING/2026-09-15_git-shadow/.agents/skills/git-shadow/references/CLOUDCLI_DEEPLINK_AUTH.md)
+- **CloudCLI 鉴权自愈与深链挂载**：👉 [CLOUDCLI_DEEPLINK_AUTH.md](references/CLOUDCLI_DEEPLINK_AUTH.md)
   *覆盖：401 令牌过期读取 `auth.db` 离线签发 7 天 HS256 JWT、409 项目存在幂等复用、乐观深链。*
-- **持续自动同步与租约自毁**：👉 [CONTINUOUS_SILENT_SYNC.md](file:///d:/_AI/10_DOING/2026-09-15_git-shadow/.agents/skills/git-shadow/references/CONTINUOUS_SILENT_SYNC.md)
+- **持续自动同步与租约自毁**：👉 [CONTINUOUS_SILENT_SYNC.md](references/CONTINUOUS_SILENT_SYNC.md)
   *覆盖：10 分钟 Lease 超时内存回收、Windows/Linux 监听机制差异、双端 Edge 对称演进路线。*
 
 ---

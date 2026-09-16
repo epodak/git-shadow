@@ -633,8 +633,11 @@ def main(args: Optional[List[str]] = None):
         return snapshot
 
     def watch_shadow(stop_event: Optional[threading.Event] = None) -> None:
-        """Watch Shadow and safely fast-forward the Git lane from its remote."""
-        stop_event = stop_event or threading.Event()
+        # 启动时首先进行一次受控推送，确保启动前已存在的本地影子文件改动第一时间打入远端
+        try:
+            submit_projection(include_cloudcli=False)
+        except Exception as exc:
+            log_warn("启动初次投影同步失败（将进入随行重试循环）: %s" % exc)
         previous = shadow_snapshot()
         now = time.monotonic()
         # 初始 last_pull 设为当前时间，给本地优先 Push 留出窗口，绝不让启动瞬间的 Pull 冲掉待同步文件
