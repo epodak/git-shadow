@@ -55,11 +55,12 @@ class TestBinding(unittest.TestCase):
         binding_mod.get_bindings_file = lambda: self.bindings_file
         try:
             # 模拟用户在 VPS 和路径提示时均直接按回车
-            with patch("builtins.input", side_effect=["", ""]):
-                with patch("git_shadow.binding.probe_remote_target", return_value=(False, "~/wkspace/myproj")):
-                    host, r_dir = binding_mod.interactive_setup_binding(str(self.temp_dir), default_host="aws")
-                    self.assertEqual(host, "aws")
-                    self.assertEqual(r_dir, "~/wkspace/myproj")
+            with patch("git_shadow.binding.get_available_ssh_hosts", return_value=["aws", "tencent"]):
+                with patch("builtins.input", side_effect=["", ""]):
+                    with patch("git_shadow.binding.probe_remote_target", return_value=(False, "~/wkspace/myproj")):
+                        host, r_dir = binding_mod.interactive_setup_binding(str(self.temp_dir), default_host="aws")
+                        self.assertEqual(host, "aws")
+                        self.assertEqual(r_dir, "~/wkspace/myproj")
 
             # 验证自动持久化
             saved = binding_mod.get_project_binding(str(self.temp_dir))

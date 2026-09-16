@@ -140,10 +140,15 @@ def interactive_setup_binding(project_root: str, default_host: Optional[str] = N
     repo_name = project_path.name
 
     hosts = get_available_ssh_hosts()
-    # 优先使用历史最近绑定、或传入的 default_host、或 aws / tencent
-    preferred_host = default_host or "aws"
-    if preferred_host not in hosts and hosts:
+    # 优先使用传入的 default_host、或历史绑定、或 hosts 中的 aws / 第一个主机
+    if default_host:
+        preferred_host = default_host
+    elif "aws" in hosts:
+        preferred_host = "aws"
+    elif hosts:
         preferred_host = hosts[0]
+    else:
+        preferred_host = "aws"
 
     print()
     print(f"{Colors.BOLD}{Colors.CYAN}======================================================================{Colors.RESET}")
