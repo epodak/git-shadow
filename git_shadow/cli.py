@@ -362,14 +362,57 @@ def main(args: Optional[List[str]] = None):
         probe.display_report()
         sys.exit(0)
 
+    # 3.4 clean 清理远端影子工作区与本地绑定
+    if subcmd == "clean":
+        target_host = sub_args[0] if sub_args else None
+        repo = RepoState(".")
+        binding = get_project_binding(repo.root_dir)
+        if not target_host and binding:
+            target_host = binding.get("host")
+        if not target_host:
+            log_error("用法: git shadow clean <host> [remote_dir]")
+            sys.exit(1)
+        target_dir = sub_args[1] if len(sub_args) > 1 else (binding.get("remote_dir") if binding else f"~/wkspace/{repo.repo_name}")
+
+        clean_cmd = f"rm -rf \"{target_dir}\""
+        edge_client = EdgeClient(target_host)
+        res = edge_client._run_ssh(clean_cmd)
+        if res.returncode == 0:
+            log_success(f"已成功删除远端影子工作区: {target_host}:{target_dir}")
+            from .binding import remove_project_binding
+            remove_project_binding(repo.root_dir)
+            log_info("已同步解除本地项目的 VPS 记忆绑定。")
+            sys.exit(0)
+        else:
+            log_error(f"删除远端工作区失败: {output_text(res.stderr).strip()}")
+            sys.exit(1)
+
     # 3.5 VPS 边缘执行器治理（不要求当前目录必须是 Git 仓库）
     if subcmd == "edge":
-        if len(sub_args) < 2:
-            log_error("用法: git shadow edge install <host> | edge status <host> <job_id> | edge resume <host> <job_id>")
+        if not sub_args:
+            log_error("用法: git shadow edge install|stop|uninstall|status|resume <host> [job_id]")
             sys.exit(1)
         edge_action = sub_args[0]
+        if len(sub_args) < 2:
+            log_error(f"用法: git shadow edge {edge_action} <host>")
+            sys.exit(1)
         edge_host = sub_args[1]
         edge_client = EdgeClient(edge_host)
+
+        if edge_action in ("stop", "kill"):
+            # 仅关停远端运行中的边缘进程，保留已安装文件与历史
+            cmd = "pkill -f 'git-shadow-edge-agent|git-shadow-service-agent' 2>/dev/null || true; rm -f ~/.local/share/git-shadow/services/*/service.sock 2>/dev/null || true"
+            edge_client._run_ssh(cmd)
+            log_success(f"已停止远端主机 [{edge_host}] 上的所有边缘进程与监听 Socket (保留安装脚本与配置)。")
+            sys.exit(0)
+
+        if edge_action in ("uninstall", "purge", "clean"):
+            # 彻底卸载远端边缘程序与所有运行时缓存/日志，零残留
+            cmd = "pkill -f 'git-shadow-edge-agent|git-shadow-service-agent' 2>/dev/null || true; rm -rf ~/.local/share/git-shadow"
+            edge_client._run_ssh(cmd)
+            log_success(f"已彻底卸载远端主机 [{edge_host}] 上的边缘程序与所有状态缓存 (零残留)。")
+            sys.exit(0)
+
         if edge_action == "install":
             sys.exit(0 if edge_client.ensure_installed() else 1)
         if len(sub_args) < 3:

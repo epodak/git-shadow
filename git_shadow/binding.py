@@ -64,6 +64,17 @@ def set_project_binding(
     return entry
 
 
+def remove_project_binding(project_root: str) -> bool:
+    """解除本地对指定项目的 VPS 与路径绑定记录"""
+    key = normalize_project_path(project_root)
+    bindings = load_all_bindings()
+    if key in bindings:
+        del bindings[key]
+        save_all_bindings(bindings)
+        return True
+    return False
+
+
 def get_available_ssh_hosts() -> List[str]:
     """从 ~/.ssh/config 探测用户配置好的全部可用 VPS 主机名"""
     ssh_cfg = pathlib.Path.home() / ".ssh" / "config"
