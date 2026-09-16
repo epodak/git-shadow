@@ -633,6 +633,7 @@ def main(args: Optional[List[str]] = None):
         return snapshot
 
     def watch_shadow(stop_event: Optional[threading.Event] = None) -> None:
+        stop_event = stop_event or threading.Event()
         # 启动时首先进行一次受控推送，确保启动前已存在的本地影子文件改动第一时间打入远端
         try:
             submit_projection(include_cloudcli=False)
