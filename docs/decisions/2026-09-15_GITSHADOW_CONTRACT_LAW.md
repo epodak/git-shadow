@@ -35,7 +35,7 @@
   CandidateFiles = (IsIgnoredByGitIgnore OR IsUntracked)
   ShadowFiles = CandidateFiles ∩ MatchedByGitShadow
   ```
-- 若项目中未显式配置 `.gitshadow`，系统优雅兼容默认轻量安全模板（`.env*`, `*.secret`, `config.local.json`, `_dev_log/`），但强烈推荐显式声明。
+- **杜绝静默内存黑盒（2026-09-25 修订）**：废除原有的“未配置时静默内存兼容默认模板”的静默行为。涉密同步与凭据管理领域**严禁不问自转**！若项目中未显式配置 `.gitshadow`，控制端首次启动时**必须强制中断并交互式提示用户创建标准 `.gitshadow` 模板**（见 [2026-09-25 决策](2026-09-25_LOCAL_SILENCE_AND_ZERO_GIT_TOUCH_LAW.md)），赋予用户 100% 的边界掌控权与审查权。
 
 ---
 
