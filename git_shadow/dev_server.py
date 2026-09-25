@@ -17,12 +17,14 @@ import webbrowser
 from typing import Dict, List, Optional, Tuple
 
 from .binding import ensure_gitshadow_file
+from .daemon import LocalDaemonManager
 from .edge import EdgeClient
 from .engine import ShadowEngine
 from .scanner import RepoState
 from .shadow_sync import ShadowManifestStore
 from .utils import Colors, NO_WINDOW_FLAG, format_size
 from .watcher import LocalChangeWatcher
+
 
 
 
@@ -113,10 +115,8 @@ class ShadowDevServer:
         print(f"  {Colors.DIM}快捷键: [o] 浏览器打开 Web  [r] 立即同步 (Push)  [p] 远端拉取 (Pull)  [c] 清屏  [q] 退出{Colors.RESET}")
         print(f"  {Colors.DIM}--------------------------------------------------------------------------------{Colors.RESET}\n")
 
-    def _on_edge_event(self, event: dict) -> None:
-        """将边缘 RPC 事件映射为热更新时间戳日志"""
-        self.get_shadow_store().consume_event(event)
-
+    def _log_edge_event(self, event: dict) -> None:
+        """格式化输出边缘 RPC 步骤流式日志"""
         ev = event.get("event")
         evt_type = event.get("type")
 
@@ -173,7 +173,12 @@ class ShadowDevServer:
             job_id = event.get("job_id", "")
             log_hmr("edge", f"✔ 远端接收任务: {job_id}", Colors.GREEN)
 
-    def push_update(self, include_cloudcli: bool = False) -> Tuple[Any, Dict[str, Any]]:
+    def _on_edge_event(self, event: dict) -> None:
+        """用户显式操作（如本地文件修改触发 HMR 推送）时的事件消费与完整日志打印"""
+        self.get_shadow_store().consume_event(event)
+        self._log_edge_event(event)
+
+    def push_update(self, include_cloudcli: bool = False) -> Tuple[Any, Dict[str, Any], int]:
         t_start = time.monotonic()
         edge_client = self.get_executor_client()
 
@@ -194,14 +199,37 @@ class ShadowDevServer:
         elapsed_ms = int((time.monotonic() - t_start) * 1000)
         return result, plan, elapsed_ms
 
-    def pull_remote_shadows(self) -> None:
+    def pull_remote_shadows(self, silent: bool = True) -> int:
+        """拉取远端影子文件；silent=True 时仅在真实有文件同步或冲突时输出日志，日常零刷屏"""
         edge_client = self.get_executor_client()
         plan = self.engine.build_shadow_pull_plan(
             shadow_files=self.repo.scan_shadow_files(),
             shadow_store=self.get_shadow_store(),
         )
         plan["job_id"] = edge_client.new_job_id()
-        edge_client.submit(plan, on_event=self._on_edge_event)
+
+        remote_changes = 0
+
+        def on_pull_event(event: dict) -> None:
+            nonlocal remote_changes
+            self.get_shadow_store().consume_event(event)
+            ev = event.get("event")
+            if ev == "shadow.remote":
+                remote_changes += 1
+                p = event.get("path", "")
+                log_hmr("remote", f"📥 收到远端 Shadow 同步: {p}", Colors.BLUE)
+            elif ev == "shadow.conflict":
+                p = event.get("path", "")
+                log_hmr("conflict", f"⚠ 影子文件 CAS 冲突: {p}", Colors.YELLOW)
+            elif ev == "job.failed":
+                err = str(event.get("error") or "未知错误")
+                log_hmr("edge", f"✖ 边缘任务失败: {err}", Colors.RED)
+            elif not silent:
+                self._log_edge_event(event)
+
+        edge_client.submit(plan, on_event=on_pull_event)
+        return remote_changes
+
 
     def shadow_snapshot(self) -> Dict[str, str]:
         snapshot = {}
@@ -252,10 +280,14 @@ class ShadowDevServer:
     def force_pull(self) -> None:
         log_hmr("action", "📥 正在检查并拉取远端影子文件 (Pull)...", Colors.CYAN)
         try:
-            self.pull_remote_shadows()
-            log_hmr("shadow", "✔ 远端影子文件拉取完成", Colors.GREEN)
+            changes = self.pull_remote_shadows(silent=False)
+            if changes > 0:
+                log_hmr("shadow", f"✔ 远端影子文件拉取完成 (已同步 {changes} 个文件)", Colors.GREEN)
+            else:
+                log_hmr("shadow", "✔ 远端已是最新，无新增影子文件改动", Colors.GREEN)
         except Exception as exc:
             log_hmr("error", f"拉取失败: {exc}", Colors.RED)
+
 
 
     def clear_screen(self) -> None:
@@ -339,7 +371,9 @@ class ShadowDevServer:
         # 进入热更新监听主循环
         previous = self.shadow_snapshot()
         last_pull = time.monotonic()
-        shadow_pull_interval = 8.0
+        last_heartbeat = time.monotonic()
+        shadow_pull_interval = 30.0
+        daemon_mgr = LocalDaemonManager(self.repo.root_dir)
 
         with LocalChangeWatcher(self.repo.root_dir) as watcher:
             try:
@@ -370,11 +404,11 @@ class ShadowDevServer:
                             time.sleep(1.0)
                         continue
 
-                    # 2. 定周期拉取远端 Shadow (仅同步私有影子文件，绝不碰 Git)
+                    # 2. 定周期静默探查远端 Shadow (默认 30 秒，完全静默，仅有变动时提示)
                     if now - last_pull >= shadow_pull_interval:
                         try:
                             pre_pull = self.shadow_snapshot()
-                            self.pull_remote_shadows()
+                            self.pull_remote_shadows(silent=True)
                             post_pull = self.shadow_snapshot()
                             for p, h in post_pull.items():
                                 if pre_pull.get(p) != h:
@@ -383,8 +417,14 @@ class ShadowDevServer:
                                 if p in pre_pull and p not in post_pull:
                                     previous.pop(p, None)
                             last_pull = now
-                        except Exception as exc:
+                        except Exception:
                             last_pull = now
+
+                    # 3. 本地守护心跳静默保活 (每 60 秒刷新一次，零控制台日志)
+                    if now - last_heartbeat >= 60.0:
+                        daemon_mgr.touch_heartbeat()
+                        last_heartbeat = now
+
 
             except KeyboardInterrupt:
                 pass
