@@ -321,7 +321,34 @@ class ShadowEngine:
             ],
         }
 
+    def build_remote_git_pull_plan(self) -> Dict[str, Any]:
+        """构建通知远端边缘执行器拉取 GitHub 最新 Git 提交的任务 Plan"""
+        target_dir = self.resolve_remote_dir()
+        return {
+            "protocol": 1,
+            "project_path": target_dir,
+            "steps": [
+                {
+                    "id": "workspace.create",
+                    "action": "workspace.create",
+                    "target": target_dir,
+                },
+                {
+                    "id": "workspace.prepare",
+                    "action": "workspace.prepare",
+                    "target": target_dir,
+                    "remote_url": self.repo.remote_url,
+                    "branch": self.repo.branch or "main",
+                    "commit": self.repo.commit,
+                    "pull": True,
+                    "git_enabled": True,
+                    "retries": 1,
+                },
+            ],
+        }
+
     def open_cloudcli_optimistic(self, domain: str = "cli.daduiot.com") -> str:
+
         """乐观先行：0秒立即拉起本地浏览器打开 CloudCLI，绝不让用户在终端黑框中空转干等"""
         base_url = f"https://{domain}"
         print(f"\n{Colors.BOLD}{Colors.GREEN}🚀 [乐观先行] 正在本地浏览器秒级打开 CloudCLI Web 远程工作台:{Colors.RESET}")

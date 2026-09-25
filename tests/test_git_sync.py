@@ -47,7 +47,37 @@ class TestGitSync(unittest.TestCase):
 
         self.assertEqual(result["status"], "blocked")
         self.assertEqual((self.local / "README.md").read_text(encoding="utf-8"), "local work\n")
+        self.assertFalse(result.get("has_remote_updates"))
+
+    def test_dirty_branch_with_remote_update_reports_has_remote_updates(self):
+        # 远端 AI 产生了新提交并推到了 origin
+        (self.writer / "README.md").write_text("ai commit\n", encoding="utf-8")
+        subprocess.run(["git", "commit", "-am", "ai commit"], cwd=self.writer, check=True, capture_output=True)
+        subprocess.run(["git", "push"], cwd=self.writer, check=True, capture_output=True)
+
+        # 本地有未提交的改动
+        (self.local / "README.md").write_text("local uncommitted\n", encoding="utf-8")
+
+        result = auto_fast_forward_pull(str(self.local), branch="main")
+
+        # 规则 3(b): 状态为 blocked，但明确标记 has_remote_updates=True，附带 remote_commit
+        self.assertEqual(result["status"], "blocked")
+        self.assertTrue(result.get("has_remote_updates"))
+        self.assertTrue(bool(result.get("remote_commit")))
+        # 本地工作区内容绝对未被覆盖！
+        self.assertEqual((self.local / "README.md").read_text(encoding="utf-8"), "local uncommitted\n")
+
+    def test_local_ahead_detected(self):
+        # 规则 2: 本地做了提交，领先远端
+        (self.local / "README.md").write_text("local advance\n", encoding="utf-8")
+        subprocess.run(["git", "commit", "-am", "local advance"], cwd=self.local, check=True, capture_output=True)
+
+        result = auto_fast_forward_pull(str(self.local), branch="main")
+
+        self.assertEqual(result["status"], "local_ahead")
+        self.assertTrue(bool(result.get("local_commit")))
 
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -20,6 +20,7 @@ from .binding import ensure_gitshadow_file
 from .daemon import LocalDaemonManager
 from .edge import EdgeClient
 from .engine import ShadowEngine
+from .git_sync import auto_fast_forward_pull
 from .scanner import RepoState
 from .shadow_sync import ShadowManifestStore
 from .utils import Colors, NO_WINDOW_FLAG, format_size
@@ -77,6 +78,8 @@ class ShadowDevServer:
         self.stop_event = threading.Event()
         self.is_running = False
         self._keyboard_thread: Optional[threading.Thread] = None
+        self._last_warned_remote_commit: Optional[str] = None
+        self._last_notified_local_commit: Optional[str] = None
 
     def get_shadow_store(self) -> ShadowManifestStore:
         if self.shadow_store is None:
@@ -230,6 +233,60 @@ class ShadowDevServer:
         edge_client.submit(plan, on_event=on_pull_event)
         return remote_changes
 
+    def trigger_remote_git_pull(self, silent: bool = True) -> None:
+        """通知远端边缘执行器拉取 GitHub 上的最新提交"""
+        edge_client = self.get_executor_client()
+        plan = self.engine.build_remote_git_pull_plan()
+        plan["job_id"] = edge_client.new_job_id()
+
+        def on_git_pull_event(event: dict) -> None:
+            ev = event.get("event")
+            if ev == "step.succeeded" and event.get("step_id") == "workspace.prepare":
+                log_hmr("git", "✔ 远端已成功拉取 GitHub 最新提交", Colors.GREEN)
+            elif ev == "job.failed":
+                log_hmr("git", f"✖ 远端 Git 拉取失败: {event.get('error')}", Colors.YELLOW)
+            elif not silent:
+                self._log_edge_event(event)
+
+        edge_client.submit(plan, on_event=on_git_pull_event)
+
+    def sync_git_bidirectional(self, silent: bool = True) -> Dict[str, Any]:
+        """安全双向 Git 智能联动与脏工作区避让 (ADR-2026-09-25)"""
+        res = auto_fast_forward_pull(self.repo.root_dir, remote="origin", branch=self.repo.branch or "")
+        status = res.get("status")
+
+        if status == "updated":
+            # 规则 3(a): 远端有新提交，本地工作区干净，已直接快进拉取
+            remote_commit = res.get("remote_commit", "")
+            log_hmr("git", f"📥 检测到远端新提交 ({remote_commit})，本地工作区干净，已自动拉取同步 (Fast-forward)", Colors.GREEN)
+            self._last_warned_remote_commit = None
+        elif status == "blocked" and res.get("has_remote_updates"):
+            # 规则 3(b): 远端有新提交，但本地存在未提交/未暂存修改，安全延缓拉取并给出提示
+            remote_commit = res.get("remote_commit", "")
+            if remote_commit != self._last_warned_remote_commit:
+                self._last_warned_remote_commit = remote_commit
+                log_hmr("git", f"💡 远端 AI 有新提交 ({remote_commit})，但本地存在未提交/暂存的修改，已安全暂缓自动拉取。请本地提交或暂存后再 pull。", Colors.YELLOW)
+        elif status == "local_ahead":
+            # 规则 2: 本地有新提交，通知远端自动拉取对齐
+            local_commit = res.get("local_commit", "")
+            if local_commit != self._last_notified_local_commit:
+                self._last_notified_local_commit = local_commit
+                log_hmr("git", f"🚀 检测到本地新提交 ({local_commit})，正在通知远端自动拉取对齐...", Colors.CYAN)
+                try:
+                    self.trigger_remote_git_pull(silent=True)
+                except Exception as exc:
+                    log_hmr("git", f"⚠ 通知远端自动拉取失败: {exc}", Colors.YELLOW)
+        elif status == "diverged":
+            log_hmr("git", f"⚠ 本地与远端提交历史分叉 (本地 {res.get('local_commit')}, 远端 {res.get('remote_commit')})，请手动处理合并", Colors.RED)
+        elif not silent and status == "up-to-date":
+            commit_short = res.get("commit") or (self.repo.commit[:7] if self.repo.commit else "")
+            log_hmr("git", f"✔ Git 仓库已是最新状态 ({commit_short})", Colors.GREEN)
+        elif not silent and status == "blocked":
+            log_hmr("git", "✔ Git 仓库与远端保持一致 (本地有未提交修改，无远端新提交)", Colors.GREEN)
+        elif not silent and status == "error":
+            log_hmr("git", f"✖ Git 同步检查失败: {res.get('message', res.get('reason'))}", Colors.RED)
+
+        return res
 
     def shadow_snapshot(self) -> Dict[str, str]:
         snapshot = {}
@@ -278,7 +335,7 @@ class ShadowDevServer:
             log_hmr("error", f"同步失败: {exc}", Colors.RED)
 
     def force_pull(self) -> None:
-        log_hmr("action", "📥 正在检查并拉取远端影子文件 (Pull)...", Colors.CYAN)
+        log_hmr("action", "📥 正在检查并拉取远端影子文件与 Git 提交 (Pull)...", Colors.CYAN)
         try:
             changes = self.pull_remote_shadows(silent=False)
             if changes > 0:
@@ -286,7 +343,13 @@ class ShadowDevServer:
             else:
                 log_hmr("shadow", "✔ 远端已是最新，无新增影子文件改动", Colors.GREEN)
         except Exception as exc:
-            log_hmr("error", f"拉取失败: {exc}", Colors.RED)
+            log_hmr("error", f"影子拉取失败: {exc}", Colors.RED)
+
+        try:
+            self.sync_git_bidirectional(silent=False)
+        except Exception as exc:
+            log_hmr("error", f"Git 拉取检查失败: {exc}", Colors.RED)
+
 
 
 
@@ -404,7 +467,7 @@ class ShadowDevServer:
                             time.sleep(1.0)
                         continue
 
-                    # 2. 定周期静默探查远端 Shadow (默认 30 秒，完全静默，仅有变动时提示)
+                    # 2. 定周期静默探查远端 Shadow 与 Git 双向对齐 (默认 30 秒，完全静默，仅有变动时提示)
                     if now - last_pull >= shadow_pull_interval:
                         try:
                             pre_pull = self.shadow_snapshot()
@@ -416,9 +479,16 @@ class ShadowDevServer:
                             for p in list(previous.keys()):
                                 if p in pre_pull and p not in post_pull:
                                     previous.pop(p, None)
-                            last_pull = now
                         except Exception:
-                            last_pull = now
+                            pass
+
+                        try:
+                            self.sync_git_bidirectional(silent=True)
+                        except Exception:
+                            pass
+
+                        last_pull = now
+
 
                     # 3. 本地守护心跳静默保活 (每 60 秒刷新一次，零控制台日志)
                     if now - last_heartbeat >= 60.0:
