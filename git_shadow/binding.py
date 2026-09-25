@@ -246,7 +246,73 @@ def interactive_setup_binding(project_root: str, default_host: Optional[str] = N
     else:
         launch_mode = "cloudcli"
 
-    # 4. 持久化保存记忆
+    # 4. 检查并引导创建 .gitshadow 契约白名单文件
+    ensure_gitshadow_file(str(project_path))
+
+    # 5. 持久化保存记忆
     set_project_binding(str(project_path), selected_host, remote_dir, launch_mode=launch_mode)
     print(f"\n{Colors.GREEN}✔ 已成功绑定项目至 [{selected_host}:{remote_dir}] (打开方式: {launch_mode})，后续运行无需重复配置！{Colors.RESET}")
     return selected_host, remote_dir, launch_mode
+
+
+GITSHADOW_TEMPLATE = """# ==============================================================================
+# ⚡ .gitshadow — 私有影子资产跨端同步白名单契约 (ADR-2026-09-15)
+# ==============================================================================
+# 【第一性原理与所有权隔离】：
+# 1. GitTrackedLane：代码基线由 Git 管理，远端 VPS 自动通过 GitHub 拉取对齐；
+# 2. ShadowLane：只有在此白名单中列出的私有文件，才会通过 CAS 原子同步到 VPS；
+# 3. 严禁混入 .git、node_modules、venv 等重型环境或版本库元数据。
+# ==============================================================================
+
+# 环境变量与私有配置
+.env*
+*.local
+config.local.*
+
+# 私钥与证书凭据
+*.key
+*.pem
+*.secret
+
+# 本地工程调试轨迹与认知文档
+_dev_log/
+*.local.md
+"""
+
+
+def ensure_gitshadow_file(project_root: str, interactive: bool = True) -> bool:
+    """检查项目根目录是否存在 .gitshadow 契约文件，若无则主动引导用户确认创建"""
+    root = pathlib.Path(project_root).resolve()
+    gitshadow_path = root / ".gitshadow"
+    if gitshadow_path.is_file():
+        return True
+
+    print()
+    print(f"{Colors.BOLD}{Colors.YELLOW}======================================================================{Colors.RESET}")
+    print(f"{Colors.BOLD} 📄 未检测到 .gitshadow 私有影子文件契约{Colors.RESET}")
+    print(f"{Colors.BOLD}{Colors.YELLOW}======================================================================{Colors.RESET}")
+    print(f" • 当前工作区: {Colors.CYAN}{root}{Colors.RESET}")
+    print(f" • 依据《分层同步所有权律》：")
+    print(f"   - Git 代码由远端直接从 GitHub 自动对齐拉取；")
+    print(f"   - 只有在 {Colors.CYAN}.gitshadow{Colors.RESET} 中声明的私有敏感文件，才会通过 CAS 原子同步到 VPS；")
+    print(f"   - 严禁盲目全量同步，严禁把 .git、node_modules 等非影子文件卷入同步。")
+    print()
+
+    if interactive and sys.stdin.isatty():
+        try:
+            choice = input(f"{Colors.YELLOW}❓ 是否立即为您生成推荐的 .gitshadow 白名单契约模板？ [Y/n]: {Colors.RESET}").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "y"
+        if choice in ("", "y", "yes"):
+            gitshadow_path.write_text(GITSHADOW_TEMPLATE, encoding="utf-8")
+            print(f"{Colors.GREEN}✔ 已成功创建 .gitshadow 契约文件！{Colors.RESET}\n")
+            return True
+        else:
+            print(f"{Colors.YELLOW}⚠ 您跳过了 .gitshadow 创建，系统将临时使用默认内存白名单。{Colors.RESET}\n")
+            return False
+    else:
+        # 非交互环境自动创建
+        gitshadow_path.write_text(GITSHADOW_TEMPLATE, encoding="utf-8")
+        print(f"{Colors.GREEN}✔ 已自动为工作区创建推荐的 .gitshadow 契约文件。{Colors.RESET}\n")
+        return True
+

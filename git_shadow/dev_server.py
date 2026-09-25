@@ -16,13 +16,14 @@ import time
 import webbrowser
 from typing import Dict, List, Optional, Tuple
 
+from .binding import ensure_gitshadow_file
 from .edge import EdgeClient
 from .engine import ShadowEngine
-from .git_sync import auto_fast_forward_pull
 from .scanner import RepoState
 from .shadow_sync import ShadowManifestStore
 from .utils import Colors, NO_WINDOW_FLAG, format_size
 from .watcher import LocalChangeWatcher
+
 
 
 def get_current_time_str() -> str:
@@ -88,7 +89,8 @@ class ShadowDevServer:
         if self.edge_client is None:
             client = EdgeClient(self.remote_host)
             if not client.ensure_installed():
-                raise RuntimeError("VPS 边缘执行器不可用")
+                detail = client.last_install_error or "SSH 连接超时或权限不足"
+                raise RuntimeError(f"远端边缘执行器不可用 ({detail})")
             self.edge_client = client
         return self.edge_client
 
@@ -146,6 +148,11 @@ class ShadowDevServer:
             action = str(event.get("action") or "")
             desc = step_desc_map.get(action) or step_desc_map.get(step) or f"步骤完成: {step}"
             log_hmr("remote", f"✔ {desc}", Colors.GREEN)
+        elif ev == "step.skipped":
+            step = str(event.get("step") or "")
+            action = str(event.get("action") or "")
+            reason = str(event.get("reason") or "条件不满足")
+            log_hmr("remote", f"ℹ 跳过步骤 {action or step} ({reason[:80]})", Colors.YELLOW)
         elif ev == "step.retry":
             step = str(event.get("step") or "")
             attempt = event.get("attempt", 1)
@@ -209,7 +216,19 @@ class ShadowDevServer:
                     snapshot[relative_path] = digest.hexdigest()
                 except OSError:
                     pass
+        # 将 .gitshadow 本身纳入快照，若用户修改白名单规则立即感知
+        gitshadow_path = os.path.join(self.repo.root_dir, ".gitshadow")
+        if os.path.isfile(gitshadow_path):
+            digest = hashlib.sha256()
+            try:
+                with open(gitshadow_path, "rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                snapshot[".gitshadow"] = digest.hexdigest()
+            except OSError:
+                pass
         return snapshot
+
 
     def open_browser(self) -> None:
         if self.web_url:
@@ -231,19 +250,13 @@ class ShadowDevServer:
             log_hmr("error", f"同步失败: {exc}", Colors.RED)
 
     def force_pull(self) -> None:
-        log_hmr("action", "📥 正在检查并拉取远端变更 (Pull)...", Colors.CYAN)
+        log_hmr("action", "📥 正在检查并拉取远端影子文件 (Pull)...", Colors.CYAN)
         try:
             self.pull_remote_shadows()
-            if self.repo.is_git:
-                res = auto_fast_forward_pull(self.repo.root_dir, branch=self.repo.branch)
-                if res["status"] == "updated":
-                    log_hmr("remote", "✔ Git 远端提交已自动拉回本地", Colors.GREEN)
-                elif res["status"] == "up-to-date":
-                    log_hmr("remote", "✔ 远端已是最新，无新增改动", Colors.GREEN)
-                elif res["status"] == "blocked":
-                    log_hmr("remote", "⚠ 本地有未提交修改，Git 自动拉取跳过", Colors.YELLOW)
+            log_hmr("shadow", "✔ 远端影子文件拉取完成", Colors.GREEN)
         except Exception as exc:
             log_hmr("error", f"拉取失败: {exc}", Colors.RED)
+
 
     def clear_screen(self) -> None:
         os.system("cls" if os.name == "nt" else "clear")
@@ -304,6 +317,7 @@ class ShadowDevServer:
     def run(self) -> int:
         """运行 Dev Server 主循环"""
         self.is_running = True
+        ensure_gitshadow_file(self.repo.root_dir)
         t0 = time.monotonic()
 
         log_hmr("init", f"正在连接目标主机 {Colors.CYAN}{self.remote_host}{Colors.RESET} 初始化同步与边缘会话...")
@@ -325,9 +339,7 @@ class ShadowDevServer:
         # 进入热更新监听主循环
         previous = self.shadow_snapshot()
         last_pull = time.monotonic()
-        last_git_pull = time.monotonic()
         shadow_pull_interval = 8.0
-        git_pull_interval = 10.0
 
         with LocalChangeWatcher(self.repo.root_dir) as watcher:
             try:
@@ -339,11 +351,15 @@ class ShadowDevServer:
                     now = time.monotonic()
                     current = self.shadow_snapshot() if (not watcher.native or notified) else previous
 
-                    # 1. 本地优先 HMR 推送
-                    if current != previous or (watcher.native and notified):
-                        changed_files = [p for p in current if current.get(p) != previous.get(p)]
-                        count_desc = f"{len(changed_files)} 个影子文件" if changed_files else "本地工作区改动"
-                        log_hmr("shadow", f"⚡ 检测到 {count_desc}，正在热同步打入远端...", Colors.CYAN)
+                    # 1. 本地优先 HMR 推送：严格只有 .gitshadow 白名单文件实际发生 SHA-256 变动才触发！
+                    if current != previous:
+                        changed_files = [p for p in set(current) | set(previous) if current.get(p) != previous.get(p)]
+                        desc_items = [p for p in changed_files if p != ".gitshadow"]
+                        if not desc_items and ".gitshadow" in changed_files:
+                            count_desc = ".gitshadow 契约规则"
+                        else:
+                            count_desc = f"{len(desc_items)} 个影子文件 ({', '.join(desc_items[:3])}{'...' if len(desc_items) > 3 else ''})"
+                        log_hmr("shadow", f"⚡ 检测到 {count_desc} 改动，正在热同步打入远端...", Colors.CYAN)
                         try:
                             _, _, sync_ms = self.push_update(include_cloudcli=False)
                             previous = current
@@ -354,7 +370,7 @@ class ShadowDevServer:
                             time.sleep(1.0)
                         continue
 
-                    # 2. 定周期拉取远端 Shadow
+                    # 2. 定周期拉取远端 Shadow (仅同步私有影子文件，绝不碰 Git)
                     if now - last_pull >= shadow_pull_interval:
                         try:
                             pre_pull = self.shadow_snapshot()
@@ -370,16 +386,9 @@ class ShadowDevServer:
                         except Exception as exc:
                             last_pull = now
 
-                    # 3. 定周期拉取远端 Git
-                    if self.repo.is_git and now - last_git_pull >= git_pull_interval:
-                        result = auto_fast_forward_pull(self.repo.root_dir, branch=self.repo.branch)
-                        last_git_pull = now
-                        if result["status"] == "updated":
-                            self.repo._load_git_info()
-                            log_hmr("remote", "📥 远端新提交已自动 fast-forward 合入本地", Colors.GREEN)
-
             except KeyboardInterrupt:
                 pass
+
 
         print(f"\n{Colors.GREEN}✔ git-shadow 随行热同步服务已优雅退出。{Colors.RESET}")
         return 0

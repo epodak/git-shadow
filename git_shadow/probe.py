@@ -15,6 +15,10 @@ class RemoteProbe:
     def scan(self, engine) -> Dict[str, Any]:
         """执行远端全景探测脚本"""
         probe_sh = r"""
+        # 0. 跨平台补全标准 PATH (包含 macOS Homebrew 与 pnpm/local bin)
+        export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$HOME/Library/pnpm:$PATH"
+        [ -d "$HOME/Library/pnpm" ] && export PNPM_HOME="$HOME/Library/pnpm"
+
         # 1. 系统与基础信息
         R_USER=$(whoami)
         R_HOME=$HOME
@@ -38,8 +42,12 @@ class RemoteProbe:
         VER_AIDER=$(aider --version 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n1 || echo "")
         VER_COMMANDCODE=$(commandcode --version 2>/dev/null | head -n1 || echo "")
 
-        # 4. 探查 AI 应用是否有可用更新 (轻量化检查全球 npm/pnpm registry，超时 3s 防卡顿)
-        OUTDATED_INFO=$(timeout 3 pnpm outdated -g 2>/dev/null || true)
+        # 4. 探查 AI 应用是否有可用更新 (轻量化检查全球 npm/pnpm registry，超时 3s 防卡顿，跨平台兼顾)
+        if command -v timeout >/dev/null 2>&1; then
+            OUTDATED_INFO=$(timeout 3 pnpm outdated -g 2>/dev/null || true)
+        else
+            OUTDATED_INFO=$(pnpm outdated -g 2>/dev/null || true)
+        fi
 
         UP_CLAUDE=$(echo "$OUTDATED_INFO" | grep -i "claude-code" | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | tail -n1 || echo "")
         UP_CLOUDCLI=$(echo "$OUTDATED_INFO" | grep -i "cloudcli" | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | tail -n1 || echo "")

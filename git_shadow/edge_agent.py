@@ -1121,6 +1121,16 @@ class EdgeExecutor:
                         break
                     except Exception as exc:
                         if attempt >= retries:
+                            if step.get("allow_failure"):
+                                self.emit_event(
+                                    job_id,
+                                    "step.skipped",
+                                    step=step_id,
+                                    action=step.get("action"),
+                                    reason=str(exc)[:500],
+                                )
+                                result = None
+                                break
                             raise
                         attempt += 1
                         self.emit_event(
@@ -1132,13 +1142,14 @@ class EdgeExecutor:
                             error=str(exc)[-2000:],
                         )
                         time.sleep(min(2, 0.25 * attempt))
-                if step.get("action") == "cloudcli.session" and isinstance(result, dict):
-                    record["session"] = {
-                        key: result[key]
-                        for key in ("session_id", "url", "provider", "project_path")
-                        if key in result
-                    }
-                self.emit_event(job_id, "step.succeeded", step=step_id, result=result)
+                if result is not None:
+                    if step.get("action") == "cloudcli.session" and isinstance(result, dict):
+                        record["session"] = {
+                            key: result[key]
+                            for key in ("session_id", "url", "provider", "project_path")
+                            if key in result
+                        }
+                    self.emit_event(job_id, "step.succeeded", step=step_id, result=result)
             self._state(job_id, "completed")
             record["status"] = "completed"
             try:

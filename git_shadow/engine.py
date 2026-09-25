@@ -246,6 +246,7 @@ class ShadowEngine:
                 "provider": resolved_provider,
                 "public_url": public_url.rstrip("/"),
                 "initial_message": "",
+                "allow_failure": True,
             }
             if cloudcli_base_url:
                 session_step["base_url"] = cloudcli_base_url.rstrip("/")

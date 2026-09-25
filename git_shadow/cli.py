@@ -734,23 +734,9 @@ def main(args: Optional[List[str]] = None):
                         except Exception as exc:
                             log_error("远端 Shadow 自动拉取失败（稍后重试）: %s" % exc)
                             last_pull = now
-                    if repo.is_git and not opts.no_git_pull and now - last_git_pull >= git_pull_interval:
-                        result = auto_fast_forward_pull(repo.root_dir, branch=repo.branch)
-                        last_git_pull = now
-                        if result["status"] == "updated":
-                            repo._load_git_info()
-                            git_pull_blocked = False
-                            log_success("Git 远端提交已自动 fast-forward 拉回本地。")
-                        elif result["status"] == "blocked":
-                            if not git_pull_blocked:
-                                log_warn("Git 自动拉取暂停：本地工作区有未提交修改；不会覆盖本地文件。")
-                                git_pull_blocked = True
-                        elif result["status"] == "error":
-                            log_error("Git 自动拉取失败（稍后重试）: %s" % result.get("message", result.get("reason", "unknown error")))
-                        elif result["status"] == "up-to-date":
-                            git_pull_blocked = False
             except KeyboardInterrupt:
                 stop_event.set()
+
 
     # 4. web 命令兼容重定向 (暂缓/废除独立 web 命令，统一收敛至 run)
     if subcmd == "web":

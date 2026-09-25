@@ -27,10 +27,16 @@ def output_text(value: Any) -> str:
     return str(value or "")
 
 
-def clean_ssh_args(host: str, remote_command: str) -> List[str]:
+def clean_ssh_args(host: str, remote_command: str, connect_timeout: int = 10) -> List[str]:
     """Build a non-interactive SSH command that ignores hostile SSH config."""
     return [
         "ssh",
+        "-o",
+        f"ConnectTimeout={connect_timeout}",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=3",
         "-o",
         "RemoteCommand=none",
         "-o",
@@ -59,8 +65,23 @@ class EdgeClient:
     def new_job_id() -> str:
         return "job-" + uuid.uuid4().hex[:16]
 
+    def _remote_checksum_cmd(self) -> str:
+        """跨 Linux, macOS 及任意 Unix 平台的稳固哈希命令：优先 python3，降级 sha256sum/shasum"""
+        return (
+            f"python3 -c \"import hashlib, sys, os; p=os.path.expanduser('{self.remote_agent_path}'); "
+            "sys.stdout.write(hashlib.sha256(open(p, 'rb').read()).hexdigest()) if os.path.isfile(p) else sys.exit(1)\" "
+            f"2>/dev/null || sha256sum {self.remote_agent_path} 2>/dev/null | awk '{{print $1}}' "
+            f"|| shasum -a 256 {self.remote_agent_path} 2>/dev/null | awk '{{print $1}}'"
+        )
+
     def _agent_command(self) -> str:
-        return "%s %s --rpc" % (
+        # 兼容 macOS Homebrew (Apple Silicon / Intel), pnpm, 以及 Linux local bin 的 PATH 导出
+        env_prefix = (
+            'export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:'
+            '$HOME/.local/bin:$HOME/bin:$HOME/Library/pnpm:$PATH"; '
+        )
+        return "%s%s %s --rpc" % (
+            env_prefix,
             shlex.quote(self.python_executable),
             self.remote_agent_path,
         )
@@ -80,9 +101,7 @@ class EdgeClient:
         self.last_install_error = ""
         source_path = pathlib.Path(__file__).with_name("edge_agent.py")
         local_digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
-        check = self._run_ssh(
-            "sha256sum %s 2>/dev/null | awk '{print $1}'" % self.remote_agent_path
-        )
+        check = self._run_ssh(self._remote_checksum_cmd())
         remote_digest = output_text(check.stdout).strip()
         if remote_digest == local_digest:
             return True
@@ -93,9 +112,12 @@ class EdgeClient:
         payload = base64.b64encode(source_path.read_bytes())
         # Tilde expansion must happen in a shell, so keep the destination path
         # literal and quote only the command's fixed pieces.
+        # 跨平台稳固解码：兼容 Python3 / Linux (base64 -d) / macOS (base64 -D)
         command = (
             "mkdir -p ~/.local/share/git-shadow/bin && "
-            "base64 -d > ~/.local/share/git-shadow/bin/git-shadow-edge-agent.py && "
+            "(python3 -c \"import sys, base64; sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read()))\" 2>/dev/null "
+            "|| base64 -d 2>/dev/null || base64 -D 2>/dev/null) "
+            "> ~/.local/share/git-shadow/bin/git-shadow-edge-agent.py && "
             "chmod 700 ~/.local/share/git-shadow/bin/git-shadow-edge-agent.py"
         )
         uploaded = self._run_ssh(command, input_data=payload)
@@ -107,9 +129,7 @@ class EdgeClient:
                 "并检查 SSH 写入权限。" % (message[-1000:], self.remote_host)
             )
             return False
-        verify = self._run_ssh(
-            "sha256sum %s 2>/dev/null | awk '{print $1}'" % self.remote_agent_path
-        )
+        verify = self._run_ssh(self._remote_checksum_cmd())
         verified_digest = output_text(verify.stdout).strip()
         if verify.returncode != 0 or verified_digest != local_digest:
             detail = output_text(verify.stderr).strip() or "remote checksum mismatch"
