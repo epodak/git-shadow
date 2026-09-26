@@ -40,7 +40,9 @@
 
 个人闭环的平台边界也必须明确：Windows、Linux、macOS 都可以作为本地控制端；当前远端执行端只验收
 Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Windows/Linux/macOS 之间任意互为远端执行端。
-远端 macOS/Windows 适配属于未来独立工作，不纳入本轮个人闭环。
+完整的远端 macOS/Windows 工作区执行适配仍属于未来独立工作，不纳入本轮个人闭环。
+但远端能力自举层已经支持 macOS：CloudCLI 可通过现有 SSH 在用户目录安装，并使用 launchd 注册服务；
+这不等同于“完整远端 macOS 工作区已完成验收”。
 
 当前只按这个个人闭环排任务；第 8 节的独立程序、Snapshot Lane、Agent Adapter、Managed VPS 均暂缓，不作为当前开发阻塞。
 
@@ -52,6 +54,7 @@ Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Wind
 - [x] 明确控制端和 VPS 端的 Python 依赖边界
 - [x] `edge install` 失败时给出可恢复诊断
 - [x] 不依赖 `pip` 的 VPS 边缘执行器验收（standalone agent 协议测试）
+- [x] 独立 Remote Capability Bootstrap：复用现有 SSH，在 Linux/macOS 用户空间准备 CloudCLI，无需手工登录远端
 
 ### 1.2 CloudCLI 编排
 
@@ -60,6 +63,7 @@ Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Wind
 - [x] clone/后续步骤失败时广播 partial 状态；Session 创建失败保持明确失败
 - [x] provider、project path、公开深链的契约校验
 - [x] 真实 `aws-us` VPS 部署 CloudCLI 1.37.3，并通过 SSH 转发完成注册、登录、受保护 API 与 `git shadow run` smoke
+- [x] CloudCLI 缺失/停止/Connection refused 时自动 capability bootstrap；失败仍保持 Git/Shadow sync-only 优雅降级
 
 ### 1.3 Git 工作区
 
