@@ -174,11 +174,25 @@ encrypted SSH plan, is redacted from persisted metadata, and is never written
 to the workspace or event journal. A resident service should instead receive
 the token through its VPS environment.
 
-The CloudCLI runtime is a Node application, but this project uses pnpm as
-the package-manager convention. On a fresh Linux VPS, enable pnpm through
-Corepack and install the pinned CloudCLI release with `pnpm add --global`;
-do not create a project `package-lock.json` or mix npm-installed project
-dependencies into the projected workspace.
+The CloudCLI runtime is a Node application. For manual administration this
+project keeps pnpm as the project/package-manager convention. Normal users do
+not need to SSH into a fresh host to prepare CloudCLI, however: git-shadow can
+reuse the existing SSH control lane and perform an isolated user-space bootstrap
+without touching the project workspace or requiring sudo.
+
+```bash
+git shadow remote status aws-micro cloudcli
+git shadow remote plan aws-micro cloudcli
+git shadow remote ensure aws-micro cloudcli
+```
+
+An explicit `git shadow run <host> cloudcli` also invokes this bootstrap
+automatically when CloudCLI is missing, stopped, or refusing local connections.
+Use `--no-bootstrap` when you want probing/degradation only. The managed
+runtime is kept below `~/.local/share/git-shadow`; no project
+`package-lock.json` is created. See
+[Remote Capability Bootstrap](docs/REMOTE_CAPABILITY_BOOTSTRAP.md) for the
+Linux/macOS service and security contract.
 
 #### 💻 Project & open an interactive shell
 ```bash
