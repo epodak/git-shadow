@@ -19,6 +19,8 @@ class TestCliContract(unittest.TestCase):
         self.assertIn("run <host> [agent] --watch", result.stdout)
         self.assertIn("轻量能力探针", result.stdout)
         self.assertIn("失败自动降级为同步模式", result.stdout)
+        self.assertIn("remote ensure <host> cloudcli", result.stdout)
+        self.assertIn("--no-bootstrap", result.stdout)
 
 
 if __name__ == "__main__":
