@@ -22,6 +22,7 @@ from .edge import EdgeClient
 from .engine import ShadowEngine
 from .git_sync import auto_fast_forward_pull
 from .probe import RemoteProbe
+from .remote_bootstrap import RemoteBootstrapManager
 from .scanner import RepoState
 from .shadow_sync import ShadowManifestStore
 from .utils import Colors, NO_WINDOW_FLAG, format_size
@@ -471,7 +472,36 @@ class ShadowDevServer:
         if self.launch_mode == "cloudcli":
             include_cloud = self._probe_cloudcli()
             if not include_cloud:
-                log_hmr("web", f"⚠ CloudCLI 能力不可用，启动降级为 sync-only；Git/Shadow 同步继续 ({self.web_failure_reason})", Colors.YELLOW)
+                bootstrap = RemoteBootstrapManager(self.engine)
+                capability = {
+                    "available": False,
+                    "reason": self.web_failure_reason or "CloudCLI unavailable",
+                }
+                if bootstrap.can_repair_cloudcli(capability):
+                    log_hmr("web", "ℹ CloudCLI 未就绪，正在通过现有 SSH 自动安装/启动...", Colors.CYAN)
+                    bootstrap_result = bootstrap.ensure_cloudcli()
+                    if bootstrap_result.get("success"):
+                        self.web_capability = "available"
+                        self.web_failure_reason = None
+                        include_cloud = True
+                        metadata = bootstrap_result.get("metadata", {})
+                        log_hmr(
+                            "web",
+                            f"✔ CloudCLI 已就绪 (service={metadata.get('service', 'unknown')}, "
+                            f"version={metadata.get('cloudcli_version', '')})",
+                            Colors.GREEN,
+                        )
+                    else:
+                        self.web_failure_reason = str(
+                            bootstrap_result.get("error") or self.web_failure_reason
+                        )
+                if not include_cloud:
+                    log_hmr(
+                        "web",
+                        f"⚠ CloudCLI 能力不可用，启动降级为 sync-only；"
+                        f"Git/Shadow 同步继续 ({self.web_failure_reason})",
+                        Colors.YELLOW,
+                    )
 
         try:
             _, plan, ms = self.push_update(include_cloudcli=include_cloud)
