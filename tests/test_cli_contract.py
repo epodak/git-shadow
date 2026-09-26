@@ -17,6 +17,8 @@ class TestCliContract(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("edge resume <host> <job>", result.stdout)
         self.assertIn("run <host> [agent] --watch", result.stdout)
+        self.assertIn("轻量能力探针", result.stdout)
+        self.assertIn("失败自动降级为同步模式", result.stdout)
 
 
 if __name__ == "__main__":
