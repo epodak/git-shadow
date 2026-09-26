@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Tuple
 from .scanner import RepoState
 from .engine import ShadowEngine
 from .probe import RemoteProbe
+from .remote_bootstrap import RemoteBootstrapManager, format_cloudcli_plan
 from .utils import Colors, NO_WINDOW_FLAG
 
 
@@ -254,16 +255,22 @@ def interactive_setup_binding(project_root: str, default_host: Optional[str] = N
     capabilities = probe_remote_capabilities(str(project_path), selected_host)
     cloudcli = capabilities.get("cloudcli", {})
     cloudcli_available = bool(cloudcli.get("available"))
-    default_mode = "1" if cloudcli_available else "2"
+    cloudcli_repairable = RemoteBootstrapManager.can_repair_cloudcli(cloudcli)
+    default_mode = "1" if (cloudcli_available or cloudcli_repairable) else "2"
 
     print(f"\n{Colors.YELLOW}❓ 请选择该工作区的默认打开与交互方式:{Colors.RESET}")
     if cloudcli_available:
         print(f"   [1] 🌐 CloudCLI Web 远程工作台 {Colors.GREEN}(推荐: 能力探针已通过){Colors.RESET}")
         print(f"   [2] 💻 远端终端 AI Agent (进入交互式终端 Shell / OpenCode / CommandCode)")
+    elif cloudcli_repairable:
+        reason = str(cloudcli.get("reason") or "unavailable")
+        print(f"   [1] 🌐 CloudCLI Web 远程工作台 {Colors.GREEN}(推荐: 当前 {reason}，选择后通过 SSH 自动安装/启动){Colors.RESET}")
+        print(f"       {Colors.DIM}{format_cloudcli_plan(selected_host).splitlines()[1].strip()}{Colors.RESET}")
+        print(f"   [2] 💻 远端终端 AI Agent (不安装 CloudCLI)")
     else:
         reason = str(cloudcli.get("reason") or "unavailable")
-        print(f"   [1] 🌐 CloudCLI Web 远程工作台 {Colors.YELLOW}(当前不可用: {reason}){Colors.RESET}")
-        print(f"   [2] 💻 远端终端 AI Agent {Colors.GREEN}(推荐: CloudCLI 不可用时的安全默认){Colors.RESET}")
+        print(f"   [1] 🌐 CloudCLI Web 远程工作台 {Colors.YELLOW}(当前不可用且无法自动修复: {reason}){Colors.RESET}")
+        print(f"   [2] 💻 远端终端 AI Agent {Colors.GREEN}(推荐){Colors.RESET}")
     print(f"   [3] ⚡ 仅后台静默同步 (纯后台无头同步，不弹出任何界面)")
     try:
         mode_input = input(f"\n请输入编号 [默认: {default_mode}]: ").strip()
@@ -278,7 +285,26 @@ def interactive_setup_binding(project_root: str, default_host: Optional[str] = N
         launch_mode = "silent"
     else:
         launch_mode = "cloudcli"
-        if not cloudcli_available:
+        if not cloudcli_available and cloudcli_repairable:
+            print(f"\n{Colors.CYAN}ℹ 正在通过现有 SSH 连接自动准备 CloudCLI，无需手工登录远端...{Colors.RESET}")
+            bootstrap_engine = ShadowEngine(repo=RepoState(str(project_path)), remote_host=selected_host)
+            bootstrap = RemoteBootstrapManager(bootstrap_engine)
+            bootstrap_result = bootstrap.ensure_cloudcli()
+            if bootstrap_result.get("success"):
+                metadata = bootstrap_result.get("metadata", {})
+                print(
+                    f"{Colors.GREEN}✔ CloudCLI 已就绪 "
+                    f"(service={metadata.get('service', 'unknown')}, "
+                    f"version={metadata.get('cloudcli_version', '')}){Colors.RESET}"
+                )
+                cloudcli_available = True
+            else:
+                print(
+                    f"{Colors.YELLOW}⚠ CloudCLI 自动准备未完成: "
+                    f"{bootstrap_result.get('error', 'unknown error')}。"
+                    f" 已保留 Web 偏好，运行时仍会优雅降级。{Colors.RESET}"
+                )
+        elif not cloudcli_available:
             print(f"{Colors.YELLOW}⚠ 已保留 CloudCLI 偏好；运行时会再次探测，仍不可用时自动降级为同步模式，不会盲目重试。{Colors.RESET}")
 
     # 4. 检查并引导创建 .gitshadow 契约白名单文件
