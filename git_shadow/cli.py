@@ -410,6 +410,15 @@ def main(args: Optional[List[str]] = None):
         probe = RemoteProbe(target_host)
         probe.scan(engine)
         probe.display_report()
+        cloudcli_capability = probe.data.get("cloudcli_capability", {})
+        if (
+            not cloudcli_capability.get("available")
+            and RemoteBootstrapManager.can_repair_cloudcli(cloudcli_capability)
+        ):
+            log_info(
+                "CloudCLI 可从本地直接修复，无需手工 SSH: %s"
+                % RemoteBootstrapManager(engine).install_command()
+            )
         sys.exit(0)
 
     # 3.4 clean 清理远端影子工作区与本地绑定
