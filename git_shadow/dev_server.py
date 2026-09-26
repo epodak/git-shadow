@@ -14,13 +14,14 @@ import sys
 import threading
 import time
 import webbrowser
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .binding import ensure_gitshadow_file
 from .daemon import LocalDaemonManager
 from .edge import EdgeClient
 from .engine import ShadowEngine
 from .git_sync import auto_fast_forward_pull
+from .probe import RemoteProbe
 from .scanner import RepoState
 from .shadow_sync import ShadowManifestStore
 from .utils import Colors, NO_WINDOW_FLAG, format_size
@@ -75,6 +76,8 @@ class ShadowDevServer:
         self.shadow_store: Optional[ShadowManifestStore] = None
         self.edge_client: Optional[EdgeClient] = None
         self.web_url: Optional[str] = None
+        self.web_capability = "unknown"  # unknown | available | unavailable | degraded
+        self.web_failure_reason: Optional[str] = None
         self.stop_event = threading.Event()
         self.is_running = False
         self._keyboard_thread: Optional[threading.Thread] = None
@@ -99,6 +102,20 @@ class ShadowDevServer:
             self.edge_client = client
         return self.edge_client
 
+    def _mark_web_unavailable(self, reason: str, state: str = "unavailable") -> None:
+        self.web_capability = state
+        self.web_failure_reason = reason
+        self.web_url = None
+
+    def _probe_cloudcli(self) -> bool:
+        capability = RemoteProbe(self.remote_host).probe_cloudcli(self.engine)
+        if capability.get("available"):
+            self.web_capability = "available"
+            self.web_failure_reason = None
+            return True
+        self._mark_web_unavailable(str(capability.get("reason") or "CloudCLI unavailable"))
+        return False
+
     def render_dashboard(self, ready_ms: int = 0) -> None:
         """渲染高颜值 Vite / Astro 风格 Dev Server 看板"""
         version = "0.1.0"
@@ -111,11 +128,24 @@ class ShadowDevServer:
         
         if self.web_url:
             print(f"  {Colors.BOLD}{Colors.GREEN}➜{Colors.RESET}  {Colors.BOLD}Web UI:{Colors.RESET}    {Colors.BOLD}{Colors.CYAN}{self.web_url}{Colors.RESET}")
+        elif self.launch_mode == "cloudcli" and self.web_capability in ("unavailable", "degraded"):
+            print(f"  {Colors.BOLD}{Colors.YELLOW}➜{Colors.RESET}  {Colors.BOLD}Web UI:{Colors.RESET}    {Colors.YELLOW}不可用，已降级{Colors.RESET} {Colors.DIM}({self.web_failure_reason or 'unknown'}){Colors.RESET}")
         
-        mode_desc = "⚡ Hot Sync & Edge Broadcast (随行热更新)" if self.launch_mode == "cloudcli" else "💻 Terminal Accompanying"
+        if self.launch_mode == "cloudcli" and self.web_capability in ("unavailable", "degraded"):
+            mode_desc = "⚡ Hot Sync (CloudCLI unavailable → sync-only)"
+        elif self.launch_mode == "cloudcli":
+            mode_desc = "⚡ Hot Sync & Edge Broadcast (随行热更新)"
+        else:
+            mode_desc = "💻 Terminal Accompanying"
         print(f"  {Colors.BOLD}{Colors.GREEN}➜{Colors.RESET}  {Colors.BOLD}Mode:{Colors.RESET}      {mode_desc}")
         print()
-        print(f"  {Colors.DIM}快捷键: [o] 浏览器打开 Web  [r] 立即同步 (Push)  [p] 远端拉取 (Pull)  [c] 清屏  [q] 退出{Colors.RESET}")
+        web_key_enabled = (
+            self.launch_mode == "cloudcli"
+            and self.web_capability not in ("unavailable", "degraded")
+            and bool(self.web_url or self.web_capability == "available")
+        )
+        web_key = "[o] 浏览器打开 Web  " if web_key_enabled else ""
+        print(f"  {Colors.DIM}快捷键: {web_key}[r] 立即同步 (Push)  [p] 远端拉取 (Pull)  [c] 清屏  [q] 退出{Colors.RESET}")
         print(f"  {Colors.DIM}--------------------------------------------------------------------------------{Colors.RESET}\n")
 
     def _log_edge_event(self, event: dict) -> None:
@@ -134,6 +164,8 @@ class ShadowDevServer:
         if ev == "session.ready":
             url = event.get("url")
             if url:
+                self.web_capability = "available"
+                self.web_failure_reason = None
                 self.web_url = url
                 log_hmr("edge", f"✔ CloudCLI 远程控制台就绪: {Colors.CYAN}{url}{Colors.RESET}", Colors.GREEN)
                 if self.auto_open_browser:
@@ -155,7 +187,11 @@ class ShadowDevServer:
             step = str(event.get("step") or "")
             action = str(event.get("action") or "")
             reason = str(event.get("reason") or "条件不满足")
-            log_hmr("remote", f"ℹ 跳过步骤 {action or step} ({reason[:80]})", Colors.YELLOW)
+            if action == "cloudcli.session" or step == "cloudcli.session":
+                self._mark_web_unavailable(reason, state="degraded")
+                log_hmr("web", f"⚠ CloudCLI 会话不可用，已降级为同步模式；文件同步继续，盲目 [o] 重试已禁用 ({reason[:120]})", Colors.YELLOW)
+            else:
+                log_hmr("remote", f"ℹ 跳过步骤 {action or step} ({reason[:80]})", Colors.YELLOW)
         elif ev == "step.retry":
             step = str(event.get("step") or "")
             attempt = event.get("attempt", 1)
@@ -316,15 +352,29 @@ class ShadowDevServer:
 
 
     def open_browser(self) -> None:
+        if self.launch_mode != "cloudcli":
+            log_hmr("action", "当前模式未启用 Web 远程控制台。", Colors.YELLOW)
+            return
+
         if self.web_url:
             log_hmr("action", f"🌐 正在浏览器中打开: {self.web_url}", Colors.GREEN)
             webbrowser.open(self.web_url)
-        else:
-            log_hmr("action", "正在重新请求 Web 远程控制台会话...", Colors.CYAN)
-            try:
-                self.push_update(include_cloudcli=True)
-            except Exception as exc:
-                log_hmr("error", f"创建会话失败: {exc}", Colors.RED)
+            return
+
+        # Never retry a Session blindly. A fresh positive capability probe is
+        # required before an explicit [o] action is allowed to submit again.
+        if not self._probe_cloudcli():
+            log_hmr("web", f"⚠ CloudCLI 仍不可用，保持同步模式，不提交无效 Session 请求 ({self.web_failure_reason})", Colors.YELLOW)
+            return
+
+        log_hmr("action", "CloudCLI 能力探针通过，正在请求新的 Web 远程控制台会话...", Colors.CYAN)
+        try:
+            self.push_update(include_cloudcli=True)
+            if not self.web_url and self.web_capability == "available":
+                self._mark_web_unavailable("session-not-created", state="degraded")
+        except Exception as exc:
+            self._mark_web_unavailable(str(exc), state="degraded")
+            log_hmr("error", f"创建会话失败，已降级为同步模式: {exc}", Colors.RED)
 
     def force_push(self) -> None:
         log_hmr("action", "⚡ 正在执行全量强制同步 (Push)...", Colors.CYAN)
@@ -417,10 +467,17 @@ class ShadowDevServer:
 
         log_hmr("init", f"正在连接目标主机 {Colors.CYAN}{self.remote_host}{Colors.RESET} 初始化同步与边缘会话...")
 
-        include_cloud = (self.launch_mode == "cloudcli")
+        include_cloud = False
+        if self.launch_mode == "cloudcli":
+            include_cloud = self._probe_cloudcli()
+            if not include_cloud:
+                log_hmr("web", f"⚠ CloudCLI 能力不可用，启动降级为 sync-only；Git/Shadow 同步继续 ({self.web_failure_reason})", Colors.YELLOW)
+
         try:
             _, plan, ms = self.push_update(include_cloudcli=include_cloud)
             self.engine.remote_dir = plan.get("project_path", self.engine.remote_dir)
+            if include_cloud and not self.web_url and self.web_capability == "available":
+                self._mark_web_unavailable("cloudcli.session completed without session.ready", state="degraded")
         except Exception as exc:
             log_hmr("error", f"初始化连接失败: {exc}", Colors.RED)
             return 1

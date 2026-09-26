@@ -12,6 +12,126 @@ class RemoteProbe:
         self.host = host
         self.data: Dict[str, Any] = {}
 
+    def probe_cloudcli(self, engine) -> Dict[str, Any]:
+        """Lightweight CloudCLI capability probe.
+
+        This is deliberately separate from the full environment scan: callers
+        may use it during onboarding or immediately before creating a Web
+        session without paying for package-manager/version discovery.
+        """
+        probe_sh = r"""
+        export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$HOME/Library/pnpm:$PATH"
+
+        INSTALLED=0
+        command -v cloudcli >/dev/null 2>&1 && INSTALLED=1
+
+        PID=""
+        PORT=""
+        if [ -f "$HOME/.cloudcli/local-server.json" ]; then
+            PID=$(grep -o '"pid": *[0-9]*' "$HOME/.cloudcli/local-server.json" 2>/dev/null | head -n1 | grep -o '[0-9]*')
+            PORT=$(grep -o '"port": *[0-9]*' "$HOME/.cloudcli/local-server.json" 2>/dev/null | head -n1 | grep -o '[0-9]*')
+        fi
+        [ -z "$PORT" ] && PORT=3001
+
+        RUNNING=0
+        if [ -n "$PID" ] && ps -p "$PID" >/dev/null 2>&1; then
+            RUNNING=1
+        fi
+
+        REACHABLE=0
+        VERIFIED=0
+        if command -v curl >/dev/null 2>&1; then
+            VERIFIED=1
+            HTTP_CODE=$(curl -sS -o /dev/null --connect-timeout 1 --max-time 2 -w '%{http_code}' "http://127.0.0.1:$PORT/" 2>/dev/null || true)
+            if [ -n "$HTTP_CODE" ] && [ "$HTTP_CODE" != "000" ]; then
+                REACHABLE=1
+            fi
+        elif command -v nc >/dev/null 2>&1; then
+            VERIFIED=1
+            nc -z -w 2 127.0.0.1 "$PORT" >/dev/null 2>&1 && REACHABLE=1
+        elif [ "$RUNNING" = "1" ]; then
+            # No network probe utility exists. Preserve the process signal but
+            # mark it unverified so callers can still degrade on runtime error.
+            REACHABLE=1
+        fi
+
+        if [ "$REACHABLE" = "1" ]; then
+            AVAILABLE=1
+            REASON="ready"
+        elif [ "$INSTALLED" != "1" ]; then
+            AVAILABLE=0
+            REASON="cloudcli-not-installed"
+        elif [ "$RUNNING" != "1" ]; then
+            AVAILABLE=0
+            REASON="cloudcli-service-not-running"
+        else
+            AVAILABLE=0
+            REASON="cloudcli-connection-refused"
+        fi
+
+        printf 'installed=%s\n' "$INSTALLED"
+        printf 'running=%s\n' "$RUNNING"
+        printf 'reachable=%s\n' "$REACHABLE"
+        printf 'verified=%s\n' "$VERIFIED"
+        printf 'available=%s\n' "$AVAILABLE"
+        printf 'pid=%s\n' "$PID"
+        printf 'port=%s\n' "$PORT"
+        printf 'reason=%s\n' "$REASON"
+        """
+        try:
+            res = engine._run_ssh(probe_sh.strip(), capture=True, check=False)
+        except Exception as exc:
+            return {
+                "available": False,
+                "installed": False,
+                "running": False,
+                "reachable": False,
+                "verified": False,
+                "pid": "",
+                "port": "",
+                "reason": "ssh-probe-failed: %s" % exc,
+            }
+
+        stdout = getattr(res, "stdout", "") or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", "replace")
+        values: Dict[str, str] = {}
+        for line in str(stdout).splitlines():
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+
+        if getattr(res, "returncode", 0) != 0 or "available" not in values:
+            stderr = getattr(res, "stderr", "") or ""
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", "replace")
+            reason = "ssh-probe-failed"
+            if str(stderr).strip():
+                reason += ": " + str(stderr).strip()[:200]
+            return {
+                "available": False,
+                "installed": False,
+                "running": False,
+                "reachable": False,
+                "verified": False,
+                "pid": "",
+                "port": "",
+                "reason": reason,
+            }
+
+        as_bool = lambda key: values.get(key) == "1"
+        return {
+            "available": as_bool("available"),
+            "installed": as_bool("installed"),
+            "running": as_bool("running"),
+            "reachable": as_bool("reachable"),
+            "verified": as_bool("verified"),
+            "pid": values.get("pid", ""),
+            "port": values.get("port", ""),
+            "reason": values.get("reason", "unknown"),
+        }
+
     def scan(self, engine) -> Dict[str, Any]:
         """执行远端全景探测脚本"""
         probe_sh = r"""
@@ -138,6 +258,17 @@ EOF
         except Exception as e:
             self.data = {"error": str(e), "raw": res.stdout}
 
+        if "error" not in self.data:
+            capability = self.probe_cloudcli(engine)
+            self.data["cloudcli_capability"] = capability
+            service = self.data.setdefault("cloudcli_service", {})
+            service["reachable"] = bool(capability.get("reachable"))
+            service["available"] = bool(capability.get("available"))
+            if capability.get("pid") and not service.get("pid"):
+                service["pid"] = capability.get("pid")
+            if capability.get("port"):
+                service["port"] = capability.get("port")
+
         return self.data
 
     def get_preferred_workspace_dir(self, repo_name: str) -> str:
@@ -157,7 +288,9 @@ EOF
         """获取所有可用的 AI Agent 列表（包括终端与 Web 应用）"""
         agents = []
         cc_srv = self.data.get("cloudcli_service", {})
-        if cc_srv.get("running"):
+        cc_cap = self.data.get("cloudcli_capability", {})
+        cc_available = bool(cc_cap.get("available")) if cc_cap else bool(cc_srv.get("running"))
+        if cc_available:
             cc_ver = self.data.get("apps", {}).get("cloudcli", {}).get("version", "")
             ver_tag = f" (v{cc_ver})" if cc_ver else ""
             agents.append({
@@ -224,12 +357,15 @@ EOF
         cc_app = self.data.get("apps", {}).get("cloudcli", {})
         cc_ver = cc_app.get("version", "")
         print(f"\n{Colors.BOLD}🌐 Web 远程工作台 (CloudCLI):{Colors.RESET}")
-        if cc_srv.get("running"):
+        cc_cap = self.data.get("cloudcli_capability", {})
+        if cc_cap.get("available"):
             ver_text = f"v{cc_ver}" if cc_ver else ""
-            print(f"  • 运行状态:     {Colors.GREEN}✔ 正在运行{Colors.RESET} {Colors.DIM}(PID: {cc_srv.get('pid')}, 端口: {cc_srv.get('port')}){Colors.RESET} {Colors.CYAN}{ver_text}{Colors.RESET}")
-            print(f"  • 接入地址:     {Colors.CYAN}https://cli.daduiot.com{Colors.RESET} (支持推送后自动弹窗)")
+            print(f"  • 运行状态:     {Colors.GREEN}✔ 可连接{Colors.RESET} {Colors.DIM}(PID: {cc_cap.get('pid') or cc_srv.get('pid')}, 端口: {cc_cap.get('port') or cc_srv.get('port')}){Colors.RESET} {Colors.CYAN}{ver_text}{Colors.RESET}")
+            print(f"  • 接入地址:     {Colors.CYAN}https://cli.daduiot.com{Colors.RESET} (能力探针通过，可创建 Session)")
+        elif cc_srv.get("running"):
+            print(f"  • 运行状态:     {Colors.YELLOW}⚠ 进程存在但服务不可连接{Colors.RESET} ({cc_cap.get('reason', 'unreachable')})")
         else:
-            print(f"  • 运行状态:     {Colors.DIM}未运行或未启动{Colors.RESET}")
+            print(f"  • 运行状态:     {Colors.DIM}不可用{Colors.RESET} ({cc_cap.get('reason', 'not-running')})")
 
         # 4. 应用侧：AI 编程智能体 (包含版本号与更新检查)
         apps = self.data.get("apps", {})

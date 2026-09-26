@@ -53,7 +53,7 @@ def print_help():
 
 {Colors.BOLD}核心命令 (Commands):{Colors.RESET}
   {Colors.GREEN}run <host> [agent]{Colors.RESET}  投影并唤起 AI Agent (可指定 cloudcli / opencode / commandcode，不指定则智能挑选)
-                    • 指定 cloudcli 时，0秒乐观拉起 Web 浏览器，后台并发流式同步代码与影子
+                    • 指定 cloudcli 时，先做轻量能力探针；可用才拉起 Web，失败自动降级为同步模式
                     • 指定终端 Agent 时，极速秒级直通交互终端
   {Colors.GREEN}probe <host>{Colors.RESET}        诊断探针：感知远端系统、用户主目录、工作区目录树与 AI 工具状态
   {Colors.GREEN}auth sync <host>{Colors.RESET}    一键净化同步本地 SSH/GitHub 鉴权密钥到远端 Linux，打通 Git 权限
@@ -90,7 +90,7 @@ def print_help():
   {Colors.YELLOW}-h, --help{Colors.RESET}          查看帮助信息
 
 {Colors.BOLD}使用示例 (Examples):{Colors.RESET}
-  git shadow run aws cloudcli         # 0秒秒开浏览器远程控制台，后台流式对齐代码与影子
+  git shadow run aws cloudcli         # 探针通过后打开浏览器；不可用则保持 Git/Shadow 同步
   git shadow run aws opencode         # 极速直通并在远端终端拉起 OpenCode
   git shadow run aws commandcode      # 极速直通并在远端终端拉起 CommandCode
   git shadow run aws                  # 自动探测远端已就绪的 AI Agent，列出数字菜单让你挑选
@@ -800,15 +800,42 @@ def main(args: Optional[List[str]] = None):
                 log_error(str(exc))
                 sys.exit(1)
 
-            # 【乐观先行】：先打开工作台；任务完成后再自动跳到 session 深链。
-            engine.open_cloudcli_optimistic()
             if preferred_ws:
                 engine.remote_dir = preferred_ws
+
+            # Capability probing is the gate for optimistic Web launch. A host
+            # that can still sync files but cannot serve CloudCLI must not be
+            # treated as a failed git-shadow host.
+            capability = RemoteProbe(remote_host).probe_cloudcli(engine)
+            if not capability.get("available"):
+                reason = capability.get("reason", "CloudCLI unavailable")
+                log_warn(
+                    "CloudCLI 当前不可用（%s），已优雅降级为 sync-only："
+                    "Git/Shadow 投影继续，不打开浏览器，也不提交无效 Session 请求。" % reason
+                )
+                try:
+                    submit_projection(include_cloudcli=False)
+                except Exception as exc:
+                    log_error("VPS 分层同步任务未完成: %s" % exc)
+                    sys.exit(1)
+                if opts.watch:
+                    watch_shadow()
+                sys.exit(0)
+
+            # Positive probe: retain the low-latency optimistic launch. The
+            # exact session deep-link is still authoritative when ready.
+            engine.open_cloudcli_optimistic()
             try:
-                submit_projection(include_cloudcli=True, provider=provider)
+                result, _ = submit_projection(include_cloudcli=True, provider=provider)
             except Exception as exc:
                 log_error("VPS 边缘任务未完成: %s" % exc)
                 sys.exit(1)
+
+            if not result.get("url"):
+                log_warn(
+                    "CloudCLI 在运行时未创建 Session，已降级为 sync-only；"
+                    "文件投影已继续完成。下次打开前会重新执行能力探针。"
+                )
             if opts.watch:
                 watch_shadow()
             sys.exit(0)
