@@ -10,6 +10,8 @@ import sys
 from typing import Dict, List, Optional, Tuple
 
 from .scanner import RepoState
+from .engine import ShadowEngine
+from .probe import RemoteProbe
 from .utils import Colors, NO_WINDOW_FLAG
 
 
@@ -149,6 +151,25 @@ def probe_remote_target(host: str, repo_name: str) -> Tuple[bool, str]:
     return False, f"~/wkspace/{repo_name}"
 
 
+def probe_remote_capabilities(project_root: str, host: str) -> Dict[str, object]:
+    """Probe host capabilities that affect onboarding choices.
+
+    A capability is runtime state, not a static host property. The returned
+    structure is intentionally small so setup can make a fast recommendation
+    without running the full environment/version scan.
+    """
+    try:
+        repo = RepoState(project_root)
+        engine = ShadowEngine(repo=repo, remote_host=host)
+        cloudcli = RemoteProbe(host).probe_cloudcli(engine)
+    except Exception as exc:
+        cloudcli = {
+            "available": False,
+            "reason": "capability-probe-failed: %s" % exc,
+        }
+    return {"cloudcli": cloudcli}
+
+
 def interactive_setup_binding(project_root: str, default_host: Optional[str] = None) -> Tuple[str, str, str]:
     """
     交互式智能引导用户挑选目标 VPS、远端承载路径及默认打开交互方式。
@@ -228,23 +249,37 @@ def interactive_setup_binding(project_root: str, default_host: Optional[str] = N
             sys.exit(1)
         remote_dir = custom_dir if custom_dir else suggested_dir
 
-    # 3. 询问打开与交互方式
+    # 3. 先探测主机能力，再询问打开与交互方式。能力是运行时事实，不能硬编码推荐。
+    print(f"\n正在探测远端主机 [{selected_host}] 的可用交互能力...")
+    capabilities = probe_remote_capabilities(str(project_path), selected_host)
+    cloudcli = capabilities.get("cloudcli", {})
+    cloudcli_available = bool(cloudcli.get("available"))
+    default_mode = "1" if cloudcli_available else "2"
+
     print(f"\n{Colors.YELLOW}❓ 请选择该工作区的默认打开与交互方式:{Colors.RESET}")
-    print(f"   [1] 🌐 CloudCLI Web 远程工作台 {Colors.GREEN}(推荐: 秒开浏览器，接收远端边缘广播并跳转深链){Colors.RESET}")
-    print(f"   [2] 💻 远端终端 AI Agent (进入交互式终端 Shell / OpenCode / CommandCode)")
+    if cloudcli_available:
+        print(f"   [1] 🌐 CloudCLI Web 远程工作台 {Colors.GREEN}(推荐: 能力探针已通过){Colors.RESET}")
+        print(f"   [2] 💻 远端终端 AI Agent (进入交互式终端 Shell / OpenCode / CommandCode)")
+    else:
+        reason = str(cloudcli.get("reason") or "unavailable")
+        print(f"   [1] 🌐 CloudCLI Web 远程工作台 {Colors.YELLOW}(当前不可用: {reason}){Colors.RESET}")
+        print(f"   [2] 💻 远端终端 AI Agent {Colors.GREEN}(推荐: CloudCLI 不可用时的安全默认){Colors.RESET}")
     print(f"   [3] ⚡ 仅后台静默同步 (纯后台无头同步，不弹出任何界面)")
     try:
-        mode_input = input("\n请输入编号 [默认: 1]: ").strip()
+        mode_input = input(f"\n请输入编号 [默认: {default_mode}]: ").strip()
     except (EOFError, KeyboardInterrupt):
         print(f"\n{Colors.RED}已取消配置。{Colors.RESET}")
         sys.exit(1)
 
-    if mode_input == "2":
+    resolved_mode = mode_input or default_mode
+    if resolved_mode == "2":
         launch_mode = "terminal"
-    elif mode_input == "3":
+    elif resolved_mode == "3":
         launch_mode = "silent"
     else:
         launch_mode = "cloudcli"
+        if not cloudcli_available:
+            print(f"{Colors.YELLOW}⚠ 已保留 CloudCLI 偏好；运行时会再次探测，仍不可用时自动降级为同步模式，不会盲目重试。{Colors.RESET}")
 
     # 4. 检查并引导创建 .gitshadow 契约白名单文件
     ensure_gitshadow_file(str(project_path))
