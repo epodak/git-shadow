@@ -20,7 +20,7 @@ class RemoteProbe:
         session without paying for package-manager/version discovery.
         """
         probe_sh = r"""
-        export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$HOME/Library/pnpm:$PATH"
+        export PATH="$HOME/.local/share/git-shadow/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$HOME/Library/pnpm:$PATH"
 
         INSTALLED=0
         command -v cloudcli >/dev/null 2>&1 && INSTALLED=1
@@ -136,7 +136,7 @@ class RemoteProbe:
         """执行远端全景探测脚本"""
         probe_sh = r"""
         # 0. 跨平台补全标准 PATH (包含 macOS Homebrew 与 pnpm/local bin)
-        export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$HOME/Library/pnpm:$PATH"
+        export PATH="$HOME/.local/share/git-shadow/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$HOME/Library/pnpm:$PATH"
         [ -d "$HOME/Library/pnpm" ] && export PNPM_HOME="$HOME/Library/pnpm"
 
         # 1. 系统与基础信息
