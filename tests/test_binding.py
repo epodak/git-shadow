@@ -83,13 +83,44 @@ class TestBinding(unittest.TestCase):
             with patch("git_shadow.binding.get_available_ssh_hosts", return_value=["aws"]):
                 with patch("builtins.input", side_effect=["", "", ""]):
                     with patch("git_shadow.binding.probe_remote_target", return_value=(False, "~/wkspace/fallback")):
-                        with patch("git_shadow.binding.probe_remote_capabilities", return_value={"cloudcli": {"available": False, "reason": "cloudcli-connection-refused"}}):
+                        with patch("git_shadow.binding.probe_remote_capabilities", return_value={"cloudcli": {"available": False, "reason": "ssh-probe-failed: offline"}}):
                             host, r_dir, mode = binding_mod.interactive_setup_binding(str(self.temp_dir), default_host="aws")
             self.assertEqual(host, "aws")
             self.assertEqual(r_dir, "~/wkspace/fallback")
             self.assertEqual(mode, "terminal")
             saved = binding_mod.get_project_binding(str(self.temp_dir))
             self.assertEqual(saved["launch_mode"], "terminal")
+        finally:
+            binding_mod.get_bindings_file = orig_func
+
+    def test_interactive_setup_binding_missing_cloudcli_auto_bootstraps(self):
+        from unittest.mock import patch
+        import git_shadow.binding as binding_mod
+
+        orig_func = binding_mod.get_bindings_file
+        binding_mod.get_bindings_file = lambda: self.bindings_file
+        try:
+            bootstrap_result = {
+                "success": True,
+                "metadata": {
+                    "service": "systemd-user",
+                    "cloudcli_version": "1.37.3",
+                },
+                "after": {"available": True, "reason": "ready"},
+            }
+            with patch("git_shadow.binding.get_available_ssh_hosts", return_value=["aws"]):
+                with patch("builtins.input", side_effect=["", "", ""]):
+                    with patch("git_shadow.binding.probe_remote_target", return_value=(False, "~/wkspace/bootstrap")):
+                        with patch("git_shadow.binding.probe_remote_capabilities", return_value={"cloudcli": {"available": False, "reason": "cloudcli-not-installed"}}):
+                            with patch("git_shadow.binding.RemoteBootstrapManager.ensure_cloudcli", return_value=bootstrap_result) as ensure:
+                                host, r_dir, mode = binding_mod.interactive_setup_binding(str(self.temp_dir), default_host="aws")
+
+            self.assertEqual(host, "aws")
+            self.assertEqual(r_dir, "~/wkspace/bootstrap")
+            self.assertEqual(mode, "cloudcli")
+            ensure.assert_called_once()
+            saved = binding_mod.get_project_binding(str(self.temp_dir))
+            self.assertEqual(saved["launch_mode"], "cloudcli")
         finally:
             binding_mod.get_bindings_file = orig_func
 
