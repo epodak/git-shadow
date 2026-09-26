@@ -60,6 +60,52 @@ class TestDevServer(unittest.TestCase):
         self.assertEqual(server.web_url, test_url)
         self.assertIn(test_url, captured.getvalue())
 
+    def test_cloudcli_step_skip_degrades_and_hides_open_hotkey(self):
+        server = ShadowDevServer(
+            project_root=str(self.temp_dir),
+            remote_host="aws",
+            launch_mode="cloudcli",
+            auto_open_browser=False,
+        )
+        server.shadow_store = MagicMock()
+        server.web_url = "https://cli.daduiot.com/session/stale"
+
+        event = {
+            "event": "step.skipped",
+            "step": "cloudcli.session",
+            "action": "cloudcli.session",
+            "reason": "CloudCLI API unavailable: Connection refused",
+        }
+        with patch("sys.stdout", io.StringIO()):
+            server._on_edge_event(event)
+
+        self.assertEqual(server.web_capability, "degraded")
+        self.assertIsNone(server.web_url)
+        self.assertIn("Connection refused", server.web_failure_reason)
+
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            server.render_dashboard()
+        out = captured.getvalue()
+        self.assertNotIn("[o]", out)
+        self.assertIn("sync-only", out)
+
+    def test_open_browser_requires_fresh_positive_probe_before_retry(self):
+        server = ShadowDevServer(
+            project_root=str(self.temp_dir),
+            remote_host="aws",
+            launch_mode="cloudcli",
+            auto_open_browser=False,
+        )
+        server.web_capability = "degraded"
+        server.web_failure_reason = "Connection refused"
+
+        with patch.object(server, "_probe_cloudcli", return_value=False):
+            with patch.object(server, "push_update") as push_update:
+                with patch("sys.stdout", io.StringIO()):
+                    server.open_browser()
+        push_update.assert_not_called()
+
     def test_hot_keys_stop(self):
         server = ShadowDevServer(
             project_root=str(self.temp_dir),

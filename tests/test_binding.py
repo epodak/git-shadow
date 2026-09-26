@@ -58,7 +58,8 @@ class TestBinding(unittest.TestCase):
             with patch("git_shadow.binding.get_available_ssh_hosts", return_value=["aws", "tencent"]):
                 with patch("builtins.input", side_effect=["", "", ""]):
                     with patch("git_shadow.binding.probe_remote_target", return_value=(False, "~/wkspace/myproj")):
-                        host, r_dir, mode = binding_mod.interactive_setup_binding(str(self.temp_dir), default_host="aws")
+                        with patch("git_shadow.binding.probe_remote_capabilities", return_value={"cloudcli": {"available": True, "reason": "ready"}}):
+                            host, r_dir, mode = binding_mod.interactive_setup_binding(str(self.temp_dir), default_host="aws")
                         self.assertEqual(host, "aws")
                         self.assertEqual(r_dir, "~/wkspace/myproj")
                         self.assertEqual(mode, "cloudcli")
@@ -69,6 +70,26 @@ class TestBinding(unittest.TestCase):
             self.assertEqual(saved["host"], "aws")
             self.assertEqual(saved["remote_dir"], "~/wkspace/myproj")
             self.assertEqual(saved["launch_mode"], "cloudcli")
+        finally:
+            binding_mod.get_bindings_file = orig_func
+
+    def test_interactive_setup_binding_cloudcli_unavailable_defaults_terminal(self):
+        from unittest.mock import patch
+        import git_shadow.binding as binding_mod
+
+        orig_func = binding_mod.get_bindings_file
+        binding_mod.get_bindings_file = lambda: self.bindings_file
+        try:
+            with patch("git_shadow.binding.get_available_ssh_hosts", return_value=["aws"]):
+                with patch("builtins.input", side_effect=["", "", ""]):
+                    with patch("git_shadow.binding.probe_remote_target", return_value=(False, "~/wkspace/fallback")):
+                        with patch("git_shadow.binding.probe_remote_capabilities", return_value={"cloudcli": {"available": False, "reason": "cloudcli-connection-refused"}}):
+                            host, r_dir, mode = binding_mod.interactive_setup_binding(str(self.temp_dir), default_host="aws")
+            self.assertEqual(host, "aws")
+            self.assertEqual(r_dir, "~/wkspace/fallback")
+            self.assertEqual(mode, "terminal")
+            saved = binding_mod.get_project_binding(str(self.temp_dir))
+            self.assertEqual(saved["launch_mode"], "terminal")
         finally:
             binding_mod.get_bindings_file = orig_func
 
@@ -83,7 +104,8 @@ class TestBinding(unittest.TestCase):
             with patch("git_shadow.binding.get_available_ssh_hosts", return_value=["aws"]):
                 with patch("builtins.input", side_effect=["1", "", "3"]):
                     with patch("git_shadow.binding.probe_remote_target", return_value=(False, "~/wkspace/test_silent")):
-                        host, r_dir, mode = binding_mod.interactive_setup_binding(str(self.temp_dir), default_host="aws")
+                        with patch("git_shadow.binding.probe_remote_capabilities", return_value={"cloudcli": {"available": False, "reason": "cloudcli-service-not-running"}}):
+                            host, r_dir, mode = binding_mod.interactive_setup_binding(str(self.temp_dir), default_host="aws")
                         self.assertEqual(mode, "silent")
             saved = binding_mod.get_project_binding(str(self.temp_dir))
             self.assertEqual(saved["launch_mode"], "silent")
