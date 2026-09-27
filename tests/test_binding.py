@@ -40,6 +40,61 @@ class TestBinding(unittest.TestCase):
         finally:
             binding_mod.get_bindings_file = orig_func
 
+    def test_branch_bindings_are_isolated_for_same_local_repo(self):
+        import git_shadow.binding as binding_mod
+
+        orig_func = binding_mod.get_bindings_file
+        binding_mod.get_bindings_file = lambda: self.bindings_file
+        try:
+            project = str(self.temp_dir)
+            foo = binding_mod.set_project_binding(
+                project,
+                "aws",
+                launch_mode="cloudcli",
+                branch="foo/bar",
+                repo_name="AI",
+                is_git=True,
+            )
+            main = binding_mod.set_project_binding(
+                project,
+                "aws",
+                launch_mode="terminal",
+                branch="main",
+                repo_name="AI",
+                is_git=True,
+            )
+
+            self.assertEqual(foo["remote_dir"], "~/wkspace/AI/foo/bar")
+            self.assertEqual(main["remote_dir"], "~/wkspace/AI/main")
+            self.assertEqual(
+                binding_mod.get_project_binding(project, "foo/bar")["launch_mode"],
+                "cloudcli",
+            )
+            self.assertEqual(
+                binding_mod.get_project_binding(project, "main")["launch_mode"],
+                "terminal",
+            )
+        finally:
+            binding_mod.get_bindings_file = orig_func
+
+    def test_legacy_path_only_binding_is_not_reused_for_another_branch(self):
+        import git_shadow.binding as binding_mod
+
+        orig_func = binding_mod.get_bindings_file
+        binding_mod.get_bindings_file = lambda: self.bindings_file
+        try:
+            project = str(self.temp_dir)
+            binding_mod.set_project_binding(
+                project,
+                "aws",
+                "~/wkspace/AI",
+                launch_mode="cloudcli",
+            )
+            self.assertIsNotNone(binding_mod.get_project_binding(project))
+            self.assertIsNone(binding_mod.get_project_binding(project, "foo/bar"))
+        finally:
+            binding_mod.get_bindings_file = orig_func
+
     def test_get_available_ssh_hosts_filters_properly(self):
         hosts = get_available_ssh_hosts()
         self.assertIsInstance(hosts, list)

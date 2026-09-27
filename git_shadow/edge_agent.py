@@ -524,8 +524,19 @@ class EdgeExecutor:
             git_env = os.environ.copy()
             git_env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
             try:
+                clone_args = [
+                    "git",
+                    "clone",
+                    "--branch",
+                    branch,
+                    "--single-branch",
+                    "--",
+                    remote_url,
+                    str(target),
+                ]
+                branch_refspec = "+refs/heads/%s:refs/remotes/origin/%s" % (branch, branch)
                 if not target.exists():
-                    run_checked(["git", "clone", "--", remote_url, str(target)], timeout=60, env=git_env)
+                    run_checked(clone_args, timeout=60, env=git_env)
                 elif not (target / ".git").exists():
                     if any(target.iterdir()):
                         try:
@@ -533,7 +544,16 @@ class EdgeExecutor:
                         except EdgeError:
                             run_checked(["git", "init"], cwd=target)
                         run_checked(["git", "remote", "add", "origin", remote_url], cwd=target)
-                        run_checked(["git", "fetch", "origin"], cwd=target, timeout=60, env=git_env)
+                        run_checked(
+                            ["git", "config", "remote.origin.fetch", branch_refspec],
+                            cwd=target,
+                        )
+                        run_checked(
+                            ["git", "fetch", "origin", branch_refspec],
+                            cwd=target,
+                            timeout=60,
+                            env=git_env,
+                        )
                         self._clear_snapshot_paths(target, preexisting)
                         try:
                             run_checked(["git", "checkout", "-B", branch, "origin/" + branch], cwd=target, timeout=60)
@@ -542,9 +562,20 @@ class EdgeExecutor:
                             raise
                         self._restore_workspace(target, preexisting)
                     else:
-                        run_checked(["git", "clone", "--", remote_url, str(target)], timeout=60, env=git_env)
+                        run_checked(clone_args, timeout=60, env=git_env)
                 else:
-                    run_checked(["git", "fetch", "origin"], cwd=target, timeout=60, env=git_env)
+                    # Converge even a manually created / legacy full clone to
+                    # this workspace's single-branch identity.
+                    run_checked(
+                        ["git", "config", "remote.origin.fetch", branch_refspec],
+                        cwd=target,
+                    )
+                    run_checked(
+                        ["git", "fetch", "origin", branch_refspec],
+                        cwd=target,
+                        timeout=60,
+                        env=git_env,
+                    )
                     run_checked(["git", "checkout", branch], cwd=target, timeout=60)
                 if (target / ".git").exists() and not (target / ".git" / "config").exists():
                     raise EdgeError("Git workspace was not initialized: %s" % target)

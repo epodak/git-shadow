@@ -35,6 +35,13 @@ Running AI coding agents (like **OpenCode**, **Claude Code**, or **Aider**) insi
 3. **Native Layer (Heavy Dependencies)**: Dependencies (`node_modules`, `venv`) are installed natively on the remote Linux host — never transferred across platforms.
 4. **WIP Layer (Opt-in Only)**: Uncommitted local diffs are never synchronized by default; pass `--wip` when a remote AI agent explicitly needs a one-time patch.
 
+Named Git branches are routed to branch-scoped remote workspaces. For example,
+repository `AI` on branch `foo/bar` maps deterministically to
+`~/wkspace/AI/foo/bar`. The remote checkout is prepared with a single-branch
+fetch refspec, so switching the local checkout to another branch does not reuse
+or mutate the previous branch's workspace. Plain non-Git folders keep the
+simpler `~/wkspace/<project>` route.
+
 ---
 
 ## ⚡ Architecture

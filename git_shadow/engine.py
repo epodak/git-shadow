@@ -5,6 +5,7 @@ git_shadow.engine
 
 import os
 import re
+import shlex
 import subprocess
 import webbrowser
 import base64
@@ -13,6 +14,7 @@ from typing import List, Optional, Dict, Any
 
 from .scanner import RepoState
 from .shadow_sync import ShadowManifestStore
+from .workspace_identity import workspace_relative_path
 from .utils import (
     log_info,
     log_success,
@@ -90,18 +92,29 @@ class ShadowEngine:
             self.remote_dir = probe_ws_dir
             return self.remote_dir
 
-        # 动态通过远端探测：优先 ~/wkspace/项目名，其次 ~/workspace/项目名，兜底 ~/项目名
+        # Git workspace identity is repository + branch.  Branch namespaces
+        # such as foo/bar intentionally become nested directories:
+        # ~/wkspace/<repo>/foo/bar.
+        suffix = workspace_relative_path(
+            self.repo.repo_name,
+            self.repo.branch if self.repo.is_git else None,
+            is_git=self.repo.is_git,
+        )
+        suffix_q = shlex.quote(suffix)
         script = f"""
+        suffix={suffix_q}
         if [ -d "$HOME/wkspace" ]; then
-            echo "$HOME/wkspace/{self.repo.repo_name}"
+            echo "$HOME/wkspace/$suffix"
         elif [ -d "$HOME/workspace" ]; then
-            echo "$HOME/workspace/{self.repo.repo_name}"
+            echo "$HOME/workspace/$suffix"
+        elif [ -d "$HOME/projects" ]; then
+            echo "$HOME/projects/$suffix"
         else
-            echo "$HOME/{self.repo.repo_name}"
+            echo "$HOME/wkspace/$suffix"
         fi
         """
         res = self._run_ssh(script.strip(), capture=True, check=False)
-        resolved = res.stdout.strip() if res.returncode == 0 else f"~/{self.repo.repo_name}"
+        resolved = res.stdout.strip() if res.returncode == 0 else f"~/wkspace/{suffix}"
         self.remote_dir = resolved
         return self.remote_dir
 
@@ -112,15 +125,17 @@ class ShadowEngine:
 
         # 检查远端目录状态
         # 检查远端目录状态与 HEAD commit
+        target_q = shlex.quote(target_dir)
         script = f"""
-        if [ ! -d "{target_dir}" ]; then
+        target={target_q}
+        if [ ! -d "$target" ]; then
             echo "NOT_EXIST"
-        elif [ ! -d "{target_dir}/.git" ]; then
+        elif [ ! -d "$target/.git" ]; then
             echo "NOT_GIT"
         else
-            cur_commit=$(cat {target_dir}/.git/SHADOW_COMMIT 2>/dev/null || true)
+            cur_commit=$(cat "$target/.git/SHADOW_COMMIT" 2>/dev/null || true)
             if [ -z "$cur_commit" ]; then
-                cur_commit=$(cd {target_dir} && git rev-parse HEAD 2>/dev/null || true)
+                cur_commit=$(cd "$target" && git rev-parse HEAD 2>/dev/null || true)
             fi
             echo "EXISTS:$cur_commit"
         fi
@@ -132,7 +147,14 @@ class ShadowEngine:
         if self.repo.remote_url:
             if state == "NOT_EXIST":
                 log_info(f"远端目录不存在，利用骨干网高速克隆: {Colors.CYAN}{self.repo.remote_url}{Colors.RESET}")
-                clone_cmd = f"git clone {self.repo.remote_url} {target_dir} && cd {target_dir} && git checkout {self.repo.branch}"
+                clone_cmd = (
+                    "git clone --branch %s --single-branch -- %s %s"
+                    % (
+                        shlex.quote(self.repo.branch),
+                        shlex.quote(self.repo.remote_url),
+                        shlex.quote(target_dir),
+                    )
+                )
                 c_res = self._run_ssh(clone_cmd, capture=True, check=False)
                 if c_res.returncode != 0:
                     log_error(f"远端克隆失败: {c_res.stderr.strip()}")
@@ -144,13 +166,17 @@ class ShadowEngine:
                 return False
             else:
                 log_info(f"远端已存在该仓库，对齐分支 [{self.repo.branch}]...")
-                align_cmd = f"""
-                cd {target_dir} && \\
-                git fetch origin && \\
-                git checkout {self.repo.branch}
-                """
+                branch_q = shlex.quote(self.repo.branch)
+                refspec_q = shlex.quote(
+                    "+refs/heads/%s:refs/remotes/origin/%s"
+                    % (self.repo.branch, self.repo.branch)
+                )
+                align_cmd = (
+                    "cd %s && git fetch origin %s && git checkout %s"
+                    % (target_q, refspec_q, branch_q)
+                )
                 if sync_git_pull:
-                    align_cmd += f" && git pull origin {self.repo.branch}"
+                    align_cmd += " && git pull origin %s" % branch_q
                 self._run_ssh(align_cmd.strip())
                 log_success(f"远端分支对齐完成 [{self.repo.branch}]")
             return True
@@ -163,7 +189,11 @@ class ShadowEngine:
                 return True
 
         log_info(f"本地未配置 remote origin，启用 {Colors.CYAN}P2P 直通同步模式{Colors.RESET}...")
-        init_cmd = f"mkdir -p {target_dir} && cd {target_dir} && (git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init -b {self.repo.branch})"
+        init_cmd = (
+            "mkdir -p %s && cd %s && "
+            "(git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init -b %s)"
+            % (target_q, target_q, shlex.quote(self.repo.branch))
+        )
         self._run_ssh(init_cmd)
 
         # 通过 tar 流式打入当前已追踪的文件 (git archive 基础代码流)
@@ -179,7 +209,10 @@ class ShadowEngine:
             log_warn("本地暂无初始提交，跳过 git archive 基础代码流")
         else:
             tar_data = archive_proc.stdout
-            extract_cmd = f"tar -xf - -C {target_dir} && echo '{self.repo.commit}' > {target_dir}/.git/SHADOW_COMMIT"
+            extract_cmd = (
+                "tar -xf - -C %s && printf '%%s\\n' %s > %s/.git/SHADOW_COMMIT"
+                % (target_q, shlex.quote(self.repo.commit), target_q)
+            )
             self._run_ssh(extract_cmd, input_data=tar_data)
 
         log_success(f"远端工作区初始化就位: {Colors.CYAN}{target_dir}{Colors.RESET}")
@@ -433,7 +466,7 @@ EOF
 
         log_step(4, 4, "远端工作区就绪，进入交互环境...")
         target_exec = agent_cmd or "$SHELL -l"
-        final_cmd = f"cd {self.remote_dir} && {target_exec}"
+        final_cmd = "cd %s && %s" % (shlex.quote(str(self.remote_dir)), target_exec)
         log_info(f"正在连接并启动: {Colors.BOLD}{target_exec}{Colors.RESET}")
 
         ssh_args = ["ssh", "-t", self.remote_host, final_cmd]

@@ -67,6 +67,8 @@ Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Wind
 
 ### 1.3 Git 工作区
 
+- [x] 命名分支按 `~/wkspace/<repo>/<branch...>` 路由；binding、CloudCLI project path 与 Shadow CAS scope 使用同一 workspace identity
+- [x] 分支工作区采用 `--single-branch` / 精确 fetch refspec，避免多个分支共享同一远端 checkout
 - [x] 公有仓库 HTTPS/SSH URL 的明确策略
 - [x] 空目录、CloudCLI 预先写入文件、已有 Git 工作区核心路径测试
 - [x] Git 可选的普通文件夹可创建 CloudCLI Session、远端空工作区和 Shadow lane

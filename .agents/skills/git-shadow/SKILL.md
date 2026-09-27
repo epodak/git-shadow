@@ -12,6 +12,8 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 
 分层同步硬边界：Git 追踪文件只交给 Git；`.gitshadow` 文件只交给 Shadow Manifest/CAS；未提交追踪文件默认不同步（只有显式 `--wip` 才作为一次性补丁投影）。
 
+**工作区身份律**：命名 Git 工作区的身份是 `(repo, branch)`，不是 repo 单独一个维度。分支 `foo/bar` 的远端路径必须保持 Git ref 的层级语义：`~/wkspace/<repo>/foo/bar`。CloudCLI project path、Shadow CAS scope、binding memory 与 Git checkout 必须全部指向同一条路径。
+
 ---
 
 ## 🚀 核心命令矩阵速查 (Quick Reference)
@@ -68,7 +70,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 
 ### 1. 跨平台路径防污染 (Platform Isolation)
 - **Windows MSYS2 绝对路径陷阱**：在 Windows Git Bash 下，严禁将 `/` 开头的绝对路径（如 `-d /home/...`）直接裸传给外部工具，MSYS2 会强行将其转译为 `D:/Tool/...` 等本地盘符；
-- **防御要求**：远端路径必须优先依赖远端环境探针感知的 `$HOME` 展开（如自动解析为 `/home/ubuntu/wkspace/<repo_name>`）。
+- **防御要求**：远端路径必须优先依赖远端环境探针感知的 `$HOME` 展开；命名 Git 分支必须遵循 branch-scoped route，例如仓库 `AI` 的 `foo/bar` 固定映射到 `/home/ubuntu/wkspace/AI/foo/bar`，严禁回退为多个分支共用 `wkspace/AI`。
 
 ### 2. SSH 非交互管道防冲突 (SSH Clean Channel)
 - 远端或本地 `~/.ssh/config` 可能配置了 `RemoteCommand ... zellij` 或 `RequestTTY yes`；

@@ -6,6 +6,7 @@ CLI 命令行交互主入口：支持探针诊断、SSH凭证同步、CloudCLI W
 import os
 import sys
 import argparse
+import shlex
 import json
 import hashlib
 import threading
@@ -27,6 +28,8 @@ from .auth import AuthManager
 from .tree import DiffTreeRenderer
 from .git_sync import auto_fast_forward_pull
 from .daemon import LocalDaemonManager
+from .binding import get_project_binding, remove_project_binding
+from .workspace_identity import workspace_relative_path
 from .utils import (
     log_info,
     log_success,
@@ -79,7 +82,7 @@ def print_help():
   {Colors.GREEN}run <host> [agent] --watch{Colors.RESET} 持续双向同步 .gitshadow，并对干净 Git 分支自动 ff-only 拉取
 
 {Colors.BOLD}选项 (Options):{Colors.RESET}
-  {Colors.YELLOW}-d, --dest <dir>{Colors.RESET}    自定义远端存放目录 (默认自动感知: ~/wkspace/项目名 或 ~/workspace/项目名)
+  {Colors.YELLOW}-d, --dest <dir>{Colors.RESET}    自定义远端存放目录 (Git 默认: ~/wkspace/<repo>/<branch...>)
   {Colors.YELLOW}--wip{Colors.RESET}               显式把未提交的 Git 修改作为一次性补丁投影；默认不传输
   {Colors.YELLOW}--watch{Colors.RESET}             保持本地进程运行，静默监听 .gitshadow 变化并提交 CAS 任务
   {Colors.YELLOW}--git-pull-interval <sec>{Colors.RESET}  --watch 时定期对干净分支执行 Git fetch + ff-only pull（默认 10 秒）
@@ -425,21 +428,33 @@ def main(args: Optional[List[str]] = None):
     if subcmd == "clean":
         target_host = sub_args[0] if sub_args else None
         repo = RepoState(".")
-        binding = get_project_binding(repo.root_dir)
+        binding = get_project_binding(
+            repo.root_dir,
+            repo.branch if repo.is_git else None,
+        )
         if not target_host and binding:
             target_host = binding.get("host")
         if not target_host:
             log_error("用法: git shadow clean <host> [remote_dir]")
             sys.exit(1)
-        target_dir = sub_args[1] if len(sub_args) > 1 else (binding.get("remote_dir") if binding else f"~/wkspace/{repo.repo_name}")
+        default_target = "~/wkspace/" + workspace_relative_path(
+            repo.repo_name,
+            repo.branch if repo.is_git else None,
+            is_git=repo.is_git,
+        )
+        target_dir = sub_args[1] if len(sub_args) > 1 else (
+            binding.get("remote_dir") if binding else default_target
+        )
 
-        clean_cmd = f"rm -rf \"{target_dir}\""
+        clean_cmd = "rm -rf -- %s" % shlex.quote(target_dir)
         edge_client = EdgeClient(target_host)
         res = edge_client._run_ssh(clean_cmd)
         if res.returncode == 0:
             log_success(f"已成功删除远端影子工作区: {target_host}:{target_dir}")
-            from .binding import remove_project_binding
-            remove_project_binding(repo.root_dir)
+            remove_project_binding(
+                repo.root_dir,
+                repo.branch if repo.is_git else None,
+            )
             log_info("已同步解除本地项目的 VPS 记忆绑定。")
             sys.exit(0)
         else:
@@ -830,7 +845,11 @@ def main(args: Optional[List[str]] = None):
             # 仅在未指定目标时，才调用全景探针扫描以呈现交互式选择菜单
             probe = RemoteProbe(remote_host)
             probe.scan(engine)
-            preferred_ws = probe.get_preferred_workspace_dir(repo.repo_name) if not remote_dir else None
+            preferred_ws = probe.get_preferred_workspace_dir(
+                repo.repo_name,
+                repo.branch if repo.is_git else None,
+                is_git=repo.is_git,
+            ) if not remote_dir else None
 
             available_agents = probe.get_available_agents()
             print(f"\n{Colors.BOLD}🤖 远端主机 [{remote_host}] 就绪的环境与 AI 智能体:{Colors.RESET}")
@@ -956,7 +975,11 @@ def main(args: Optional[List[str]] = None):
     elif subcmd == "up":
         probe = RemoteProbe(remote_host)
         probe.scan(engine)
-        preferred_ws = probe.get_preferred_workspace_dir(repo.repo_name) if not remote_dir else None
+        preferred_ws = probe.get_preferred_workspace_dir(
+                repo.repo_name,
+                repo.branch if repo.is_git else None,
+                is_git=repo.is_git,
+            ) if not remote_dir else None
 
         if preferred_ws:
             engine.remote_dir = preferred_ws

@@ -27,6 +27,7 @@ from .scanner import RepoState
 from .shadow_sync import ShadowManifestStore
 from .utils import Colors, NO_WINDOW_FLAG, format_size
 from .watcher import LocalChangeWatcher
+from .workspace_identity import workspace_relative_path
 
 
 
@@ -124,7 +125,14 @@ class ShadowDevServer:
         print(f"  {Colors.BOLD}{Colors.GREEN}GIT-SHADOW{Colors.RESET} {Colors.DIM}v{version}{Colors.RESET}  {Colors.DIM}ready in {ready_ms} ms{Colors.RESET}\n")
         print(f"  {Colors.BOLD}{Colors.GREEN}➜{Colors.RESET}  {Colors.BOLD}Local:{Colors.RESET}     {Colors.CYAN}{self.repo.root_dir}{Colors.RESET}")
         
-        target_path = self.engine.remote_dir or f"~/wkspace/{self.repo.repo_name}"
+        target_path = self.engine.remote_dir or (
+            "~/wkspace/"
+            + workspace_relative_path(
+                self.repo.repo_name,
+                self.repo.branch if self.repo.is_git else None,
+                is_git=self.repo.is_git,
+            )
+        )
         print(f"  {Colors.BOLD}{Colors.GREEN}➜{Colors.RESET}  {Colors.BOLD}Target:{Colors.RESET}    {Colors.CYAN}{self.remote_host}:{target_path}{Colors.RESET}")
         
         if self.web_url:
