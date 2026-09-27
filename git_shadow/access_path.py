@@ -392,9 +392,16 @@ echo "GS_TS_READY=1"
                 "tailscale": ts,
             }
 
+        serve_command = (
+            "tailscale serve --bg 3001 || "
+            "{ rc=$?; "
+            "if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then "
+            "sudo -n tailscale serve --bg 3001; "
+            "else exit $rc; fi; }"
+        )
         try:
             res = self.engine._run_ssh(
-                "tailscale serve --bg 3001",
+                serve_command,
                 capture=True,
                 check=False,
             )
