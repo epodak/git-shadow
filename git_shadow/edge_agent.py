@@ -578,23 +578,29 @@ class EdgeExecutor:
             )
 
         repo_root.rename(staging)
+        created_dirs: List[pathlib.Path] = []
         try:
             repo_root.mkdir(parents=True, exist_ok=False)
-            destination = repo_root.joinpath(*legacy_parts)
-            destination.parent.mkdir(parents=True, exist_ok=True)
+            created_dirs.append(repo_root)
+            parent = repo_root
+            for part in legacy_parts[:-1]:
+                parent = parent / part
+                parent.mkdir(exist_ok=False)
+                created_dirs.append(parent)
+            destination = parent / legacy_parts[-1]
             if destination.exists():
                 raise EdgeError(
                     "legacy workspace migration target already exists: %s" % destination
                 )
             staging.rename(destination)
         except Exception:
-            # Best-effort rollback.  Never leave the old checkout hidden in a
-            # staging name if the new container could not be established.
-            try:
-                if repo_root.exists() and not any(repo_root.iterdir()):
-                    repo_root.rmdir()
-            except OSError:
-                pass
+            # Roll back only directories created by this migration, and only
+            # while they remain empty.  Never delete concurrent user content.
+            for directory in reversed(created_dirs):
+                try:
+                    directory.rmdir()
+                except OSError:
+                    break
             if staging.exists() and not repo_root.exists():
                 staging.rename(repo_root)
             raise
