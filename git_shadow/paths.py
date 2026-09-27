@@ -92,11 +92,16 @@ def local_state_root() -> pathlib.Path:
     return migrate_legacy_local_state()
 
 
-def cleanup_test_tree(path: pathlib.Path, attempts: int = 6) -> bool:
-    """Best-effort Windows-friendly cleanup for test workspaces.
+def cleanup_test_tree(
+    path: pathlib.Path,
+    attempts: int = 6,
+    strict: bool = True,
+) -> bool:
+    """Windows-friendly cleanup for test workspaces.
 
     rmtree(ignore_errors=True) used to silently leak directories into Home.
-    This helper clears read-only bits and retries transient sharing violations.
+    This helper clears read-only bits, retries transient sharing violations,
+    and by default raises if the directory still exists after all retries.
     """
     target = pathlib.Path(path)
     if not target.exists():
@@ -122,7 +127,13 @@ def cleanup_test_tree(path: pathlib.Path, attempts: int = 6) -> bool:
             return True
         if attempt < total_attempts - 1:
             time.sleep(0.05 * (attempt + 1))
-    return not target.exists()
+    removed = not target.exists()
+    if not removed and strict:
+        raise OSError(
+            "git-shadow test workspace cleanup failed after %s attempts: %s"
+            % (total_attempts, target)
+        )
+    return removed
 
 
 def test_temp_root() -> pathlib.Path:
