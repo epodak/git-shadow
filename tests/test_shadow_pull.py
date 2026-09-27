@@ -5,6 +5,8 @@ import pathlib
 import shutil
 import tempfile
 import unittest
+
+from git_shadow.paths import test_temp_root
 from types import SimpleNamespace
 
 from git_shadow.edge_agent import EdgeError, EdgeExecutor, EventJournal
@@ -13,7 +15,7 @@ from git_shadow.shadow_sync import ShadowManifestStore
 
 class TestShadowPull(unittest.TestCase):
     def setUp(self):
-        self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_pull_", dir=str(pathlib.Path.home())))
+        self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_pull_", dir=str(test_temp_root())))
         self.remote = self.root / "remote"
         self.local = self.root / "local"
         self.remote.mkdir()
