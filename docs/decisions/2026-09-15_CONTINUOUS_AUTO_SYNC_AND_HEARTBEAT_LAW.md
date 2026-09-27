@@ -58,7 +58,7 @@
 
 配置真源与运行时结构统一置于远端用户主目录下：
 ```text
-~/.local/share/git-shadow/
+~/.git-shadow/
 ├── bin/
 │   ├── git-shadow-edge-agent.py   # 一次性与常驻服务共享的 TypedExecutionPlan 执行器
 │   └── git-shadow-service-agent.py # Unix socket 服务入口
@@ -87,7 +87,7 @@
   如果用户合上笔记本电脑、网络断开或遗忘卸载，远端若无休止常驻，多项目累积将耗尽 VPS 的进程和系统内存。
 - **心跳租约自毁机制 (Heartbeat Lease TTL)**：
   1. 服务进程在启动时携带租约超时参数（默认 `--lease-ttl 600`，即 10 分钟）；
-  2. 当本地客户端活着时，本地在后台定期（如每 60 秒）向远端发送一次轻量租约刷新（`touch ~/.local/share/git-shadow/leases/<project-hash>.lease`）；
+  2. 当本地客户端活着时，本地在后台定期（如每 60 秒）向远端发送一次轻量租约刷新（`touch ~/.git-shadow/leases/<project-hash>.lease`）；
   3. 远端服务每隔约 1 秒检查 lease 文件时间戳：
      ```bash
      now=$(date +%s)
