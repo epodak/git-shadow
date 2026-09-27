@@ -122,7 +122,7 @@ class TestRemoteBootstrapManager(unittest.TestCase):
         self.assertIn(CLOUDCLI_PACKAGE + "@" + CLOUDCLI_VERSION, script)
         self.assertIn(NVM_VERSION, script)
         self.assertIn(NODE_VERSION, script)
-        self.assertIn("$HOME/.local/share/git-shadow", script)
+        self.assertIn("$HOME/.git-shadow", script)
         self.assertNotIn("sudo ", script)
 
     def test_plan_exposes_exact_local_command(self):
