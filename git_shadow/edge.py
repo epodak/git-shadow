@@ -110,8 +110,19 @@ class EdgeClient:
             log_warn("VPS 边缘执行器探测失败，将尝试重新安装: %s" % detail[-1000:])
 
         migration = (
-            "if [ ! -e ~/.git-shadow ] && [ -d ~/.local/share/git-shadow ]; then "
-            "mv ~/.local/share/git-shadow ~/.git-shadow; fi; "
+            "mkdir -p ~/.git-shadow; "
+            "if [ -d ~/.local/share/git-shadow ]; then "
+            "for name in bin apps runtime runs services; do "
+            "if [ ! -e ~/.git-shadow/$name ] && [ -e ~/.local/share/git-shadow/$name ]; then "
+            "mv ~/.local/share/git-shadow/$name ~/.git-shadow/$name; fi; "
+            "done; "
+            "fi; "
+            "if [ -d ~/.local/state/git-shadow ]; then "
+            "for name in logs cloudcli.pid; do "
+            "if [ ! -e ~/.git-shadow/$name ] && [ -e ~/.local/state/git-shadow/$name ]; then "
+            "mv ~/.local/state/git-shadow/$name ~/.git-shadow/$name; fi; "
+            "done; "
+            "fi; "
             "mkdir -p ~/.git-shadow/bin"
         )
         migrated = self._run_ssh(migration)
