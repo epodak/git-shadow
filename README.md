@@ -42,7 +42,7 @@ Shadow 不是第二套 Git，也不是 rsync 替代品。
 
 ## 架构
 
-README 不再使用 Mermaid，避免不同 GitHub/Markdown 渲染环境下图表失效。核心数据流直接表示为：
+为避免不同 GitHub/Markdown 环境下图表渲染差异，架构改为纯文本表示：
 
 ~~~text
 本地工作区
