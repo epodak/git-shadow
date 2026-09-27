@@ -339,9 +339,10 @@ git shadow run aws-micro cloudcli --provider codex --service --watch
 - 本地 Shadow 改动 → CAS push；
 - 远端 Shadow 改动 → CAS pull；
 - 本地 Git 工作树干净时 → 定期 fetch + fast-forward；
-- 本地有未提交修改时 → 自动暂停 Git 拉取，绝不覆盖本地工作。
+- 本地有未提交修改时 → 自动暂停 Git 拉取，绝不覆盖本地工作；
+- 本地切换 Git 分支时 → 当前 watcher 立即停止，防止把新分支 Shadow 推到旧分支工作区。
 
-远端 Agent 应通过 Git commit + push 交付 tracked 代码，本地再正常收取提交。
+远端 Agent 应通过 Git commit + push 交付 tracked 代码，本地再正常收取提交。切换本地分支后，应在新分支重新启动 watch/run --watch，让新的 Repository + Branch identity 接管同步。
 
 ## Git 远端与鉴权
 
@@ -401,6 +402,7 @@ git shadow service <host> unload
 ## 更多设计文档
 
 - [Remote Capability Bootstrap](docs/REMOTE_CAPABILITY_BOOTSTRAP.md)
+- [Branch-Scoped Workspace Routing Law](docs/decisions/2026-09-27_BRANCH_SCOPED_WORKSPACE_ROUTING_LAW.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Layered Sync Ownership Law](docs/decisions/2026-09-15_LAYERED_SYNC_OWNERSHIP_LAW.md)
 - [Remote Edge Executor JSONL Law](docs/decisions/2026-09-15_REMOTE_EDGE_EXECUTOR_JSONL_LAW.md)
@@ -536,7 +538,7 @@ An explicit CloudCLI run automatically attempts repairable bootstrap unless disa
 git shadow run aws-micro cloudcli --provider codex --service --watch
 ~~~
 
-The watcher synchronizes Shadow state bidirectionally through CAS and only fast-forwards Git when the local worktree is clean.
+The watcher synchronizes Shadow state bidirectionally through CAS and only fast-forwards Git when the local worktree is clean. If the local checkout changes branch, the watcher stops instead of continuing to write Shadow state into the previous branch workspace.
 
 ## Design invariants
 
