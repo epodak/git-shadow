@@ -51,6 +51,59 @@ class TestWorkspacePrepare(unittest.TestCase):
             executor._stop.set()
             executor._lease_thread.join(timeout=2)
 
+    def test_legacy_repo_root_migrates_to_its_own_branch_without_losing_dirty_state(self):
+        legacy_root = self.root / "wkspace" / "AI"
+        legacy_root.parent.mkdir(parents=True)
+        subprocess.run(
+            ["git", "clone", "--branch", "main", "--single-branch", str(self.origin), str(legacy_root)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        (legacy_root / "README.md").write_text("legacy-dirty\n", encoding="utf-8")
+        (legacy_root / "UNTRACKED.local").write_text("keep-me\n", encoding="utf-8")
+        requested_target = legacy_root / "foo" / "bar"
+
+        executor = EdgeExecutor(str(self.root / "legacy-route-state"))
+        try:
+            first = executor._execute_step(
+                "job-legacy-route",
+                {
+                    "action": "workspace.route",
+                    "repo_root": str(legacy_root),
+                    "target": str(requested_target),
+                    "branch": "foo/bar",
+                },
+            )
+
+            migrated_main = legacy_root / "main"
+            self.assertTrue(first["migrated"])
+            self.assertTrue((migrated_main / ".git").is_dir())
+            self.assertFalse((legacy_root / ".git").exists())
+            self.assertEqual(
+                (migrated_main / "README.md").read_text(encoding="utf-8"),
+                "legacy-dirty\n",
+            )
+            self.assertEqual(
+                (migrated_main / "UNTRACKED.local").read_text(encoding="utf-8"),
+                "keep-me\n",
+            )
+            self.assertFalse(requested_target.exists())
+
+            second = executor._execute_step(
+                "job-legacy-route-again",
+                {
+                    "action": "workspace.route",
+                    "repo_root": str(legacy_root),
+                    "target": str(requested_target),
+                    "branch": "foo/bar",
+                },
+            )
+            self.assertFalse(second["migrated"])
+        finally:
+            executor._stop.set()
+            executor._lease_thread.join(timeout=2)
+
     def test_branch_scoped_workspace_fetches_only_its_branch(self):
         subprocess.run(
             ["git", "checkout", "-b", "foo/bar"],
