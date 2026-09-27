@@ -4,12 +4,14 @@ import subprocess
 import tempfile
 import unittest
 
+from git_shadow.paths import test_temp_root
+
 from git_shadow.git_sync import auto_fast_forward_pull
 
 
 class TestGitSync(unittest.TestCase):
     def setUp(self):
-        self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_git_sync_", dir=str(pathlib.Path.home())))
+        self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_git_sync_", dir=str(test_temp_root())))
         self.remote = self.root / "origin.git"
         self.local = self.root / "local"
         self.writer = self.root / "writer"
