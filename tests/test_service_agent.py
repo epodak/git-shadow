@@ -8,10 +8,12 @@ import tempfile
 import time
 import unittest
 
+from git_shadow.paths import test_temp_root
+
 
 class TestServiceAgent(unittest.TestCase):
     def setUp(self):
-        self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_service_", dir=str(pathlib.Path.home())))
+        self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_service_", dir=str(test_temp_root())))
         self.service_root = self.root / "service"
         self.state_root = self.root / "state"
         self.workspace = self.root / "workspace"
