@@ -28,7 +28,7 @@ VPS（特别在 1C1G/1C2G 规格下）系统内存与进程资源极其宝贵。
 1. **租约时效**：服务启动时绑定 `--lease-ttl 600`（10 分钟）；
 2. **心跳刷新**：本地客户端存活期间，后台定期（约 60 秒）刷新远端租约时间戳：
    ```text
-   touch ~/.local/share/git-shadow/services/<project-hash>/lease
+   touch ~/.git-shadow/services/<project-hash>/lease
    ```
 3. **内核自检**：远端服务守护进程定期比对当前时间戳与 `lease` 文件的最后修改时间；
 4. **超时自毁**：一旦本地客户端离线超过 10 分钟未刷新租约，守护进程自动执行优雅退出，清理 Socket、PID 和 Lease 文件，**主动向 Linux 内核归还全部内存与句柄**。
