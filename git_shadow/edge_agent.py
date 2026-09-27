@@ -511,6 +511,102 @@ class EdgeExecutor:
                     raise EdgeError("archive contains an unsafe path") from exc
             archive.extractall(str(target))
 
+    @staticmethod
+    def _branch_route_parts(branch: str) -> List[str]:
+        value = str(branch or "").strip()
+        if value.startswith("refs/heads/"):
+            value = value[len("refs/heads/"):]
+        if not value or value.startswith("/") or value.endswith("/") or "//" in value:
+            raise EdgeError("branch is not routable: %s" % value)
+        parts = value.split("/")
+        for part in parts:
+            if (
+                not part
+                or part in (".", "..")
+                or "\\" in part
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in part)
+            ):
+                raise EdgeError("branch contains an unsafe path component")
+        return parts
+
+    def _workspace_route(self, step: Dict[str, Any]) -> Dict[str, Any]:
+        """Migrate the legacy <workspace>/<repo> Git checkout into branch layout.
+
+        The migration renames the whole legacy worktree first, then recreates
+        the repository name as a container directory.  Dirty/untracked files
+        move with the worktree; nothing is reset or copied.
+        """
+        repo_root = ensure_inside(str(step.get("repo_root", "")), self.home)
+        target = ensure_inside(str(step.get("target", "")), self.home)
+        requested_branch = str(step.get("branch") or "").strip()
+        self._branch_route_parts(requested_branch)
+
+        try:
+            target.relative_to(repo_root)
+        except ValueError as exc:
+            raise EdgeError("branch workspace target is outside repository container") from exc
+
+        legacy_git = repo_root / ".git"
+        if not legacy_git.is_dir():
+            return {"migrated": False, "repo_root": str(repo_root)}
+
+        legacy_branch, _ = run_checked(
+            ["git", "branch", "--show-current"],
+            cwd=repo_root,
+            timeout=30,
+        )
+        legacy_branch = legacy_branch.strip()
+        if not legacy_branch:
+            short_sha, _ = run_checked(
+                ["git", "rev-parse", "--short=12", "HEAD"],
+                cwd=repo_root,
+                timeout=30,
+            )
+            legacy_branch = "__detached__/" + short_sha.strip()
+
+        legacy_parts = self._branch_route_parts(legacy_branch)
+        staging = repo_root.parent / (
+            repo_root.name + ".git-shadow-migrate-" + str(os.getpid())
+        )
+        if staging.exists():
+            staging = repo_root.parent / (
+                repo_root.name
+                + ".git-shadow-migrate-"
+                + str(os.getpid())
+                + "-"
+                + str(int(time.time() * 1000))
+            )
+
+        repo_root.rename(staging)
+        try:
+            repo_root.mkdir(parents=True, exist_ok=False)
+            destination = repo_root.joinpath(*legacy_parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                raise EdgeError(
+                    "legacy workspace migration target already exists: %s" % destination
+                )
+            staging.rename(destination)
+        except Exception:
+            # Best-effort rollback.  Never leave the old checkout hidden in a
+            # staging name if the new container could not be established.
+            try:
+                if repo_root.exists() and not any(repo_root.iterdir()):
+                    repo_root.rmdir()
+            except OSError:
+                pass
+            if staging.exists() and not repo_root.exists():
+                staging.rename(repo_root)
+            raise
+
+        return {
+            "migrated": True,
+            "from": str(repo_root),
+            "to": str(destination),
+            "branch": legacy_branch,
+            "requested_branch": requested_branch,
+        }
+
     def _workspace_prepare(self, step: Dict[str, Any]) -> None:
         target = ensure_inside(str(step.get("target", "")), self.home)
         remote_url = str(step.get("remote_url") or "").strip()
@@ -1107,6 +1203,8 @@ class EdgeExecutor:
         if action == "exec":
             self._run_streaming(job_id, str(step.get("id") or "step"), step)
             return {}
+        if action == "workspace.route":
+            return self._workspace_route(step)
         if action == "workspace.prepare":
             self._workspace_prepare(step)
             return {}
