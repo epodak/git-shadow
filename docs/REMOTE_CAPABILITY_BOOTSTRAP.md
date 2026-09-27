@@ -199,6 +199,18 @@ CloudCLI unavailable != git-shadow host unavailable
 
 A failed bootstrap never disables the Git/Shadow synchronization lanes.
 
+CloudCLI bootstrap only prepares the application on loopback. It does **not**
+decide how the user's browser reaches that service. Browser exposure is owned by
+the independent Access Path layer:
+
+~~~
+CloudCLI 127.0.0.1:3001
+├─ Tailscale Serve
+└─ configured public URL (for example Cloudflare Tunnel)
+~~~
+
+See [Adaptive Web Access Path Law](decisions/2026-09-27_ADAPTIVE_WEB_ACCESS_PATH_LAW.md).
+
 ## 8. Binding/onboarding behavior
 
 During initial project binding:
