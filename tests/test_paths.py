@@ -43,25 +43,38 @@ class TestGitShadowPaths(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = pathlib.Path(tmp)
             legacy = base / "legacy-state"
+            legacy_share = base / "legacy-share"
             target = base / "new-home"
             legacy.mkdir()
+            legacy_share.mkdir()
             (legacy / "bindings.json").write_text('{"legacy": true}', encoding="utf-8")
             (legacy / "shadows").mkdir()
             (legacy / "shadows" / "old.json").write_text("legacy", encoding="utf-8")
+            (legacy_share / "bin").mkdir()
+            (legacy_share / "bin" / "git-shadow-edge-agent.py").write_text(
+                "legacy-edge",
+                encoding="utf-8",
+            )
 
             target.mkdir()
             (target / "bindings.json").write_text('{"new": true}', encoding="utf-8")
 
             with patch.object(paths, "LEGACY_LOCAL_STATE", legacy):
-                paths.migrate_legacy_local_state(target)
+                with patch.object(paths, "LEGACY_LOCAL_SHARE", legacy_share):
+                    paths.migrate_legacy_local_state(target)
 
             self.assertEqual(
                 (target / "bindings.json").read_text(encoding="utf-8"),
                 '{"new": true}',
             )
             self.assertTrue((target / "shadows" / "old.json").is_file())
+            self.assertEqual(
+                (target / "bin" / "git-shadow-edge-agent.py").read_text(encoding="utf-8"),
+                "legacy-edge",
+            )
             self.assertTrue((legacy / "bindings.json").is_file())
             self.assertFalse((legacy / "shadows").exists())
+            self.assertFalse((legacy_share / "bin").exists())
 
 
 if __name__ == "__main__":
