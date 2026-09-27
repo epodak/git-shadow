@@ -4,7 +4,7 @@ import shutil
 import tempfile
 import unittest
 
-from git_shadow.paths import test_temp_root
+from git_shadow.paths import cleanup_test_tree, test_temp_root
 
 from git_shadow.binding import (
     get_available_ssh_hosts,
@@ -20,7 +20,7 @@ class TestBinding(unittest.TestCase):
         self.bindings_file = self.temp_dir / "bindings.json"
 
     def tearDown(self):
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        cleanup_test_tree(self.temp_dir)
 
     def test_set_and_get_binding(self):
         project = "D:/test_project/foo"
