@@ -5,14 +5,17 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .scanner import RepoState
 from .engine import ShadowEngine
 from .probe import RemoteProbe
+from .remote_bootstrap import RemoteBootstrapManager, format_cloudcli_plan
 from .utils import Colors, NO_WINDOW_FLAG
+from .workspace_identity import branch_route, workspace_relative_path
 
 
 def get_bindings_file() -> pathlib.Path:
@@ -21,7 +24,7 @@ def get_bindings_file() -> pathlib.Path:
     return base / "bindings.json"
 
 
-def load_all_bindings() -> Dict[str, Dict[str, str]]:
+def load_all_bindings() -> Dict[str, Dict[str, Any]]:
     f = get_bindings_file()
     if not f.exists():
         return {}
@@ -32,7 +35,7 @@ def load_all_bindings() -> Dict[str, Dict[str, str]]:
         return {}
 
 
-def save_all_bindings(bindings: Dict[str, Dict[str, str]]) -> None:
+def save_all_bindings(bindings: Dict[str, Dict[str, Any]]) -> None:
     f = get_bindings_file()
     f.write_text(json.dumps(bindings, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -41,10 +44,24 @@ def normalize_project_path(path: str) -> str:
     return str(pathlib.Path(path).resolve()).replace("\\", "/")
 
 
-def get_project_binding(project_root: str) -> Optional[Dict[str, str]]:
-    key = normalize_project_path(project_root)
+def binding_key(project_root: str, branch: Optional[str] = None) -> str:
+    """Branch-aware local binding identity.
+
+    The same local checkout may switch branches over time.  A branch-specific
+    remote_dir must therefore never be recovered from a path-only binding.
+    """
+    root = normalize_project_path(project_root)
+    if not branch:
+        return root
+    return root + "\nbranch:" + branch_route(branch)
+
+
+def get_project_binding(
+    project_root: str,
+    branch: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     bindings = load_all_bindings()
-    return bindings.get(key)
+    return bindings.get(binding_key(project_root, branch))
 
 
 def set_project_binding(
@@ -52,23 +69,38 @@ def set_project_binding(
     host: str,
     remote_dir: Optional[str] = None,
     launch_mode: str = "cloudcli",
-) -> Dict[str, str]:
-    key = normalize_project_path(project_root)
+    branch: Optional[str] = None,
+    repo_name: Optional[str] = None,
+    is_git: bool = False,
+) -> Dict[str, Any]:
+    key = binding_key(project_root, branch)
     bindings = load_all_bindings()
+    resolved_repo = repo_name or pathlib.Path(project_root).name
+    default_dir = "~/wkspace/" + workspace_relative_path(
+        resolved_repo,
+        branch if is_git else None,
+        is_git=is_git,
+    )
     entry = {
         "host": host,
-        "remote_dir": remote_dir or f"~/wkspace/{pathlib.Path(project_root).name}",
+        "remote_dir": remote_dir or default_dir,
         "launch_mode": launch_mode,
-        "project_root": key,
+        "project_root": normalize_project_path(project_root),
+        "branch": branch or "",
+        "repo_name": resolved_repo,
+        "is_git": bool(is_git),
     }
     bindings[key] = entry
     save_all_bindings(bindings)
     return entry
 
 
-def remove_project_binding(project_root: str) -> bool:
-    """解除本地对指定项目的 VPS 与路径绑定记录"""
-    key = normalize_project_path(project_root)
+def remove_project_binding(
+    project_root: str,
+    branch: Optional[str] = None,
+) -> bool:
+    """解除本地对指定项目/分支的 VPS 与路径绑定记录"""
+    key = binding_key(project_root, branch)
     bindings = load_all_bindings()
     if key in bindings:
         del bindings[key]
@@ -104,24 +136,34 @@ def get_available_ssh_hosts() -> List[str]:
     return hosts
 
 
-def probe_remote_target(host: str, repo_name: str) -> Tuple[bool, str]:
+def probe_remote_target(
+    host: str,
+    repo_name: str,
+    branch: Optional[str] = None,
+    is_git: bool = True,
+) -> Tuple[bool, str]:
     """
-    通过轻量 SSH 探针快速检查远端是否已有该项目目录。
-    返回: (exists, resolved_remote_path)
+    通过轻量 SSH 探针检查精确 workspace identity 是否已存在。
+    Git 分支 foo/bar 对应 <workspace>/<repo>/foo/bar。
     """
+    suffix = workspace_relative_path(repo_name, branch, is_git=is_git)
+    suffix_q = shlex.quote(suffix)
     probe_script = f"""
-    if [ -d "$HOME/wkspace/{repo_name}" ]; then
-        echo "EXISTS:$HOME/wkspace/{repo_name}"
-    elif [ -d "$HOME/workspace/{repo_name}" ]; then
-        echo "EXISTS:$HOME/workspace/{repo_name}"
-    elif [ -d "$HOME/{repo_name}" ]; then
-        echo "EXISTS:$HOME/{repo_name}"
+    suffix={suffix_q}
+    if [ -d "$HOME/wkspace/$suffix" ]; then
+        echo "EXISTS:$HOME/wkspace/$suffix"
+    elif [ -d "$HOME/workspace/$suffix" ]; then
+        echo "EXISTS:$HOME/workspace/$suffix"
+    elif [ -d "$HOME/projects/$suffix" ]; then
+        echo "EXISTS:$HOME/projects/$suffix"
     elif [ -d "$HOME/wkspace" ]; then
-        echo "NEW:$HOME/wkspace/{repo_name}"
+        echo "NEW:$HOME/wkspace/$suffix"
     elif [ -d "$HOME/workspace" ]; then
-        echo "NEW:$HOME/workspace/{repo_name}"
+        echo "NEW:$HOME/workspace/$suffix"
+    elif [ -d "$HOME/projects" ]; then
+        echo "NEW:$HOME/projects/$suffix"
     else
-        echo "NEW:$HOME/wkspace/{repo_name}"
+        echo "NEW:$HOME/wkspace/$suffix"
     fi
     """
     cmd = [
@@ -148,7 +190,7 @@ def probe_remote_target(host: str, repo_name: str) -> Tuple[bool, str]:
             return False, out[4:].strip()
     except Exception:
         pass
-    return False, f"~/wkspace/{repo_name}"
+    return False, f"~/wkspace/{suffix}"
 
 
 def probe_remote_capabilities(project_root: str, host: str) -> Dict[str, object]:
@@ -176,7 +218,9 @@ def interactive_setup_binding(project_root: str, default_host: Optional[str] = N
     返回: (selected_host, remote_dir, launch_mode)
     """
     project_path = pathlib.Path(project_root).resolve()
-    repo_name = project_path.name
+    repo = RepoState(str(project_path))
+    repo_name = repo.repo_name
+    branch = repo.branch if repo.is_git else None
 
     hosts = get_available_ssh_hosts()
     # 优先使用传入的 default_host、或历史绑定、或 hosts 中的 aws / 第一个主机
@@ -234,7 +278,12 @@ def interactive_setup_binding(project_root: str, default_host: Optional[str] = N
 
     # 2. 远端路径推导与确认
     print(f"\n正在快速探测远端主机 [{selected_host}] 的工作区环境...")
-    is_existing, suggested_dir = probe_remote_target(selected_host, repo_name)
+    is_existing, suggested_dir = probe_remote_target(
+        selected_host,
+        repo_name,
+        branch=branch,
+        is_git=repo.is_git,
+    )
 
     if is_existing:
         print(f"✔ 远端已检测到现有目录: {Colors.GREEN}{suggested_dir}{Colors.RESET}")
@@ -254,16 +303,22 @@ def interactive_setup_binding(project_root: str, default_host: Optional[str] = N
     capabilities = probe_remote_capabilities(str(project_path), selected_host)
     cloudcli = capabilities.get("cloudcli", {})
     cloudcli_available = bool(cloudcli.get("available"))
-    default_mode = "1" if cloudcli_available else "2"
+    cloudcli_repairable = RemoteBootstrapManager.can_repair_cloudcli(cloudcli)
+    default_mode = "1" if (cloudcli_available or cloudcli_repairable) else "2"
 
     print(f"\n{Colors.YELLOW}❓ 请选择该工作区的默认打开与交互方式:{Colors.RESET}")
     if cloudcli_available:
         print(f"   [1] 🌐 CloudCLI Web 远程工作台 {Colors.GREEN}(推荐: 能力探针已通过){Colors.RESET}")
         print(f"   [2] 💻 远端终端 AI Agent (进入交互式终端 Shell / OpenCode / CommandCode)")
+    elif cloudcli_repairable:
+        reason = str(cloudcli.get("reason") or "unavailable")
+        print(f"   [1] 🌐 CloudCLI Web 远程工作台 {Colors.GREEN}(推荐: 当前 {reason}，选择后通过 SSH 自动安装/启动){Colors.RESET}")
+        print(f"       {Colors.DIM}{format_cloudcli_plan(selected_host).splitlines()[1].strip()}{Colors.RESET}")
+        print(f"   [2] 💻 远端终端 AI Agent (不安装 CloudCLI)")
     else:
         reason = str(cloudcli.get("reason") or "unavailable")
-        print(f"   [1] 🌐 CloudCLI Web 远程工作台 {Colors.YELLOW}(当前不可用: {reason}){Colors.RESET}")
-        print(f"   [2] 💻 远端终端 AI Agent {Colors.GREEN}(推荐: CloudCLI 不可用时的安全默认){Colors.RESET}")
+        print(f"   [1] 🌐 CloudCLI Web 远程工作台 {Colors.YELLOW}(当前不可用且无法自动修复: {reason}){Colors.RESET}")
+        print(f"   [2] 💻 远端终端 AI Agent {Colors.GREEN}(推荐){Colors.RESET}")
     print(f"   [3] ⚡ 仅后台静默同步 (纯后台无头同步，不弹出任何界面)")
     try:
         mode_input = input(f"\n请输入编号 [默认: {default_mode}]: ").strip()
@@ -278,14 +333,41 @@ def interactive_setup_binding(project_root: str, default_host: Optional[str] = N
         launch_mode = "silent"
     else:
         launch_mode = "cloudcli"
-        if not cloudcli_available:
+        if not cloudcli_available and cloudcli_repairable:
+            print(f"\n{Colors.CYAN}ℹ 正在通过现有 SSH 连接自动准备 CloudCLI，无需手工登录远端...{Colors.RESET}")
+            bootstrap_engine = ShadowEngine(repo=RepoState(str(project_path)), remote_host=selected_host)
+            bootstrap = RemoteBootstrapManager(bootstrap_engine)
+            bootstrap_result = bootstrap.ensure_cloudcli()
+            if bootstrap_result.get("success"):
+                metadata = bootstrap_result.get("metadata", {})
+                print(
+                    f"{Colors.GREEN}✔ CloudCLI 已就绪 "
+                    f"(service={metadata.get('service', 'unknown')}, "
+                    f"version={metadata.get('cloudcli_version', '')}){Colors.RESET}"
+                )
+                cloudcli_available = True
+            else:
+                print(
+                    f"{Colors.YELLOW}⚠ CloudCLI 自动准备未完成: "
+                    f"{bootstrap_result.get('error', 'unknown error')}。"
+                    f" 已保留 Web 偏好，运行时仍会优雅降级。{Colors.RESET}"
+                )
+        elif not cloudcli_available:
             print(f"{Colors.YELLOW}⚠ 已保留 CloudCLI 偏好；运行时会再次探测，仍不可用时自动降级为同步模式，不会盲目重试。{Colors.RESET}")
 
     # 4. 检查并引导创建 .gitshadow 契约白名单文件
     ensure_gitshadow_file(str(project_path))
 
     # 5. 持久化保存记忆
-    set_project_binding(str(project_path), selected_host, remote_dir, launch_mode=launch_mode)
+    set_project_binding(
+        str(project_path),
+        selected_host,
+        remote_dir,
+        launch_mode=launch_mode,
+        branch=branch,
+        repo_name=repo_name,
+        is_git=repo.is_git,
+    )
     print(f"\n{Colors.GREEN}✔ 已成功绑定项目至 [{selected_host}:{remote_dir}] (打开方式: {launch_mode})，后续运行无需重复配置！{Colors.RESET}")
     return selected_host, remote_dir, launch_mode
 

@@ -6,6 +6,7 @@ git_shadow.probe
 import json
 from typing import Dict, Any, List, Optional
 from .utils import Colors, format_size, log_info, log_warn, log_success, log_error
+from .workspace_identity import workspace_relative_path
 
 class RemoteProbe:
     def __init__(self, host: str):
@@ -20,7 +21,7 @@ class RemoteProbe:
         session without paying for package-manager/version discovery.
         """
         probe_sh = r"""
-        export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$HOME/Library/pnpm:$PATH"
+        export PATH="$HOME/.local/share/git-shadow/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$HOME/Library/pnpm:$PATH"
 
         INSTALLED=0
         command -v cloudcli >/dev/null 2>&1 && INSTALLED=1
@@ -136,7 +137,7 @@ class RemoteProbe:
         """执行远端全景探测脚本"""
         probe_sh = r"""
         # 0. 跨平台补全标准 PATH (包含 macOS Homebrew 与 pnpm/local bin)
-        export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$HOME/Library/pnpm:$PATH"
+        export PATH="$HOME/.local/share/git-shadow/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$HOME/Library/pnpm:$PATH"
         [ -d "$HOME/Library/pnpm" ] && export PNPM_HOME="$HOME/Library/pnpm"
 
         # 1. 系统与基础信息
@@ -271,18 +272,24 @@ EOF
 
         return self.data
 
-    def get_preferred_workspace_dir(self, repo_name: str) -> str:
-        """根据远端实际情况计算最佳工作区存放路径"""
+    def get_preferred_workspace_dir(
+        self,
+        repo_name: str,
+        branch: Optional[str] = None,
+        is_git: bool = True,
+    ) -> str:
+        """根据远端实际情况计算分支隔离的最佳工作区路径。"""
         home = self.data.get("home", "~")
         ws_list = [w for w in self.data.get("workspaces", "").split() if w]
+        suffix = workspace_relative_path(repo_name, branch, is_git=is_git)
         if "wkspace" in ws_list:
-            return f"{home}/wkspace/{repo_name}"
+            return f"{home}/wkspace/{suffix}"
         elif "workspace" in ws_list:
-            return f"{home}/workspace/{repo_name}"
+            return f"{home}/workspace/{suffix}"
         elif "projects" in ws_list:
-            return f"{home}/projects/{repo_name}"
+            return f"{home}/projects/{suffix}"
         else:
-            return f"{home}/{repo_name}"
+            return f"{home}/wkspace/{suffix}"
 
     def get_available_agents(self) -> List[Dict[str, str]]:
         """获取所有可用的 AI Agent 列表（包括终端与 Web 应用）"""

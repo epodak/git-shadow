@@ -5,6 +5,7 @@ git_shadow.engine
 
 import os
 import re
+import shlex
 import subprocess
 import webbrowser
 import base64
@@ -13,6 +14,7 @@ from typing import List, Optional, Dict, Any
 
 from .scanner import RepoState
 from .shadow_sync import ShadowManifestStore
+from .workspace_identity import branch_route, workspace_relative_path
 from .utils import (
     log_info,
     log_success,
@@ -38,6 +40,9 @@ class ShadowEngine:
         # 路径净化：防止 Windows Git Bash 将绝对路径错误转义为 D:/Tool/...
         cleaned_dir = self._clean_path(remote_dir) if remote_dir else None
         self.remote_dir = cleaned_dir  # 稍后在对齐时动态解析推荐路径
+        # Explicit -d/--dest is user-owned routing.  Automatic routing may
+        # safely migrate the legacy repo-root layout into branch subfolders.
+        self._auto_branch_routing = remote_dir is None
 
     def _clean_path(self, path: Optional[str]) -> Optional[str]:
         """清洗由于 Windows MSYS 路径转换引入的异常本地盘符前缀"""
@@ -90,20 +95,63 @@ class ShadowEngine:
             self.remote_dir = probe_ws_dir
             return self.remote_dir
 
-        # 动态通过远端探测：优先 ~/wkspace/项目名，其次 ~/workspace/项目名，兜底 ~/项目名
+        # Git workspace identity is repository + branch.  Branch namespaces
+        # such as foo/bar intentionally become nested directories:
+        # ~/wkspace/<repo>/foo/bar.
+        suffix = workspace_relative_path(
+            self.repo.repo_name,
+            self.repo.branch if self.repo.is_git else None,
+            is_git=self.repo.is_git,
+        )
+        suffix_q = shlex.quote(suffix)
         script = f"""
+        suffix={suffix_q}
         if [ -d "$HOME/wkspace" ]; then
-            echo "$HOME/wkspace/{self.repo.repo_name}"
+            echo "$HOME/wkspace/$suffix"
         elif [ -d "$HOME/workspace" ]; then
-            echo "$HOME/workspace/{self.repo.repo_name}"
+            echo "$HOME/workspace/$suffix"
+        elif [ -d "$HOME/projects" ]; then
+            echo "$HOME/projects/$suffix"
         else
-            echo "$HOME/{self.repo.repo_name}"
+            echo "$HOME/wkspace/$suffix"
         fi
         """
         res = self._run_ssh(script.strip(), capture=True, check=False)
-        resolved = res.stdout.strip() if res.returncode == 0 else f"~/{self.repo.repo_name}"
+        resolved = res.stdout.strip() if res.returncode == 0 else f"~/wkspace/{suffix}"
         self.remote_dir = resolved
         return self.remote_dir
+
+    def _workspace_route_step(self, target_dir: str) -> Optional[Dict[str, Any]]:
+        """Return a typed migration step for the automatic branch layout.
+
+        Old git-shadow versions used ~/wkspace/<repo> as the Git checkout.
+        New routing needs ~/wkspace/<repo>/<branch>.  The edge executor owns
+        the safe migration so a new branch is never created *inside* a legacy
+        Git worktree.
+        """
+        if not getattr(self, "_auto_branch_routing", False):
+            return None
+        if not bool(getattr(self.repo, "is_git", False)):
+            return None
+        branch = str(getattr(self.repo, "branch", "") or "")
+        if not branch:
+            return None
+
+        route = branch_route(branch)
+        normalized = str(target_dir).replace("\\", "/").rstrip("/")
+        suffix = "/" + route
+        if not normalized.endswith(suffix):
+            return None
+        repo_root = normalized[: -len(suffix)]
+        if not repo_root:
+            return None
+        return {
+            "id": "workspace.route",
+            "action": "workspace.route",
+            "repo_root": repo_root,
+            "target": normalized,
+            "branch": branch,
+        }
 
     def prepare_remote_repo(self, sync_git_pull: bool = False, probe_ws_dir: Optional[str] = None) -> bool:
         """在远端克隆或对齐 Git 仓库"""
@@ -112,15 +160,17 @@ class ShadowEngine:
 
         # 检查远端目录状态
         # 检查远端目录状态与 HEAD commit
+        target_q = shlex.quote(target_dir)
         script = f"""
-        if [ ! -d "{target_dir}" ]; then
+        target={target_q}
+        if [ ! -d "$target" ]; then
             echo "NOT_EXIST"
-        elif [ ! -d "{target_dir}/.git" ]; then
+        elif [ ! -d "$target/.git" ]; then
             echo "NOT_GIT"
         else
-            cur_commit=$(cat {target_dir}/.git/SHADOW_COMMIT 2>/dev/null || true)
+            cur_commit=$(cat "$target/.git/SHADOW_COMMIT" 2>/dev/null || true)
             if [ -z "$cur_commit" ]; then
-                cur_commit=$(cd {target_dir} && git rev-parse HEAD 2>/dev/null || true)
+                cur_commit=$(cd "$target" && git rev-parse HEAD 2>/dev/null || true)
             fi
             echo "EXISTS:$cur_commit"
         fi
@@ -132,7 +182,14 @@ class ShadowEngine:
         if self.repo.remote_url:
             if state == "NOT_EXIST":
                 log_info(f"远端目录不存在，利用骨干网高速克隆: {Colors.CYAN}{self.repo.remote_url}{Colors.RESET}")
-                clone_cmd = f"git clone {self.repo.remote_url} {target_dir} && cd {target_dir} && git checkout {self.repo.branch}"
+                clone_cmd = (
+                    "git clone --branch %s --single-branch -- %s %s"
+                    % (
+                        shlex.quote(self.repo.branch),
+                        shlex.quote(self.repo.remote_url),
+                        shlex.quote(target_dir),
+                    )
+                )
                 c_res = self._run_ssh(clone_cmd, capture=True, check=False)
                 if c_res.returncode != 0:
                     log_error(f"远端克隆失败: {c_res.stderr.strip()}")
@@ -144,13 +201,17 @@ class ShadowEngine:
                 return False
             else:
                 log_info(f"远端已存在该仓库，对齐分支 [{self.repo.branch}]...")
-                align_cmd = f"""
-                cd {target_dir} && \\
-                git fetch origin && \\
-                git checkout {self.repo.branch}
-                """
+                branch_q = shlex.quote(self.repo.branch)
+                refspec_q = shlex.quote(
+                    "+refs/heads/%s:refs/remotes/origin/%s"
+                    % (self.repo.branch, self.repo.branch)
+                )
+                align_cmd = (
+                    "cd %s && git fetch origin %s && git checkout %s"
+                    % (target_q, refspec_q, branch_q)
+                )
                 if sync_git_pull:
-                    align_cmd += f" && git pull origin {self.repo.branch}"
+                    align_cmd += " && git pull origin %s" % branch_q
                 self._run_ssh(align_cmd.strip())
                 log_success(f"远端分支对齐完成 [{self.repo.branch}]")
             return True
@@ -163,7 +224,11 @@ class ShadowEngine:
                 return True
 
         log_info(f"本地未配置 remote origin，启用 {Colors.CYAN}P2P 直通同步模式{Colors.RESET}...")
-        init_cmd = f"mkdir -p {target_dir} && cd {target_dir} && (git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init -b {self.repo.branch})"
+        init_cmd = (
+            "mkdir -p %s && cd %s && "
+            "(git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init -b %s)"
+            % (target_q, target_q, shlex.quote(self.repo.branch))
+        )
         self._run_ssh(init_cmd)
 
         # 通过 tar 流式打入当前已追踪的文件 (git archive 基础代码流)
@@ -179,7 +244,10 @@ class ShadowEngine:
             log_warn("本地暂无初始提交，跳过 git archive 基础代码流")
         else:
             tar_data = archive_proc.stdout
-            extract_cmd = f"tar -xf - -C {target_dir} && echo '{self.repo.commit}' > {target_dir}/.git/SHADOW_COMMIT"
+            extract_cmd = (
+                "tar -xf - -C %s && printf '%%s\\n' %s > %s/.git/SHADOW_COMMIT"
+                % (target_q, shlex.quote(self.repo.commit), target_q)
+            )
             self._run_ssh(extract_cmd, input_data=tar_data)
 
         log_success(f"远端工作区初始化就位: {Colors.CYAN}{target_dir}{Colors.RESET}")
@@ -205,6 +273,10 @@ class ShadowEngine:
         target_dir = self.resolve_remote_dir()
         shadow_files = shadow_files if shadow_files is not None else self.repo.scan_shadow_files()
         steps: List[Dict[str, Any]] = []
+
+        route_step = self._workspace_route_step(target_dir)
+        if route_step:
+            steps.append(route_step)
 
         # Create the project directory first so CloudCLI can create a Session
         # against it before the potentially slow Git clone starts.
@@ -302,10 +374,12 @@ class ShadowEngine:
         manifest = shadow_store or ShadowManifestStore(self.repo.root_dir)
         patterns_getter = getattr(self.repo, "shadow_patterns", None)
         patterns = patterns_getter() if callable(patterns_getter) else []
-        return {
-            "protocol": 1,
-            "project_path": target_dir,
-            "steps": [
+        steps: List[Dict[str, Any]] = []
+        route_step = self._workspace_route_step(target_dir)
+        if route_step:
+            steps.append(route_step)
+        steps.extend(
+            [
                 {
                     "id": "workspace.create",
                     "action": "workspace.create",
@@ -318,16 +392,23 @@ class ShadowEngine:
                     "entries": manifest.build_pull_entries(files),
                     "patterns": patterns,
                 },
-            ],
+            ]
+        )
+        return {
+            "protocol": 1,
+            "project_path": target_dir,
+            "steps": steps,
         }
 
     def build_remote_git_pull_plan(self) -> Dict[str, Any]:
         """构建通知远端边缘执行器拉取 GitHub 最新 Git 提交的任务 Plan"""
         target_dir = self.resolve_remote_dir()
-        return {
-            "protocol": 1,
-            "project_path": target_dir,
-            "steps": [
+        steps: List[Dict[str, Any]] = []
+        route_step = self._workspace_route_step(target_dir)
+        if route_step:
+            steps.append(route_step)
+        steps.extend(
+            [
                 {
                     "id": "workspace.create",
                     "action": "workspace.create",
@@ -344,7 +425,12 @@ class ShadowEngine:
                     "git_enabled": True,
                     "retries": 1,
                 },
-            ],
+            ]
+        )
+        return {
+            "protocol": 1,
+            "project_path": target_dir,
+            "steps": steps,
         }
 
     def open_cloudcli_optimistic(self, domain: str = "cli.daduiot.com") -> str:
@@ -377,17 +463,15 @@ if not os.path.exists(db_path):
 try:
     con = sqlite3.connect(db_path)
     cur = con.cursor()
-    # 优先匹配当前工作区路径或父级目录关联的活跃会话
+    # Branch-scoped workspace identity requires an exact project path.
+    # A parent project (for example ~/wkspace/AI) must never hijack the
+    # session for ~/wkspace/AI/foo/bar.
     target_dir = "{self.remote_dir}"
     cur.execute(
-        "SELECT session_id, custom_name, project_path FROM sessions WHERE isArchived = 0 AND (project_path = ? OR ? LIKE project_path || '%') ORDER BY updated_at DESC LIMIT 1",
-        (target_dir, target_dir)
+        "SELECT session_id, custom_name, project_path FROM sessions WHERE isArchived = 0 AND project_path = ? ORDER BY updated_at DESC LIMIT 1",
+        (target_dir,)
     )
     row = cur.fetchone()
-    if not row:
-        # 若无工作区精准匹配，获取全局最新的活跃会话
-        cur.execute("SELECT session_id, custom_name, project_path FROM sessions WHERE isArchived = 0 ORDER BY updated_at DESC LIMIT 1")
-        row = cur.fetchone()
 
     if row:
         print(f"SESSION:{{row[0]}}")
@@ -433,7 +517,7 @@ EOF
 
         log_step(4, 4, "远端工作区就绪，进入交互环境...")
         target_exec = agent_cmd or "$SHELL -l"
-        final_cmd = f"cd {self.remote_dir} && {target_exec}"
+        final_cmd = "cd %s && %s" % (shlex.quote(str(self.remote_dir)), target_exec)
         log_info(f"正在连接并启动: {Colors.BOLD}{target_exec}{Colors.RESET}")
 
         ssh_args = ["ssh", "-t", self.remote_host, final_cmd]

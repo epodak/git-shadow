@@ -2,10 +2,19 @@ import pathlib
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
+
+from git_shadow.cli import current_named_branch
 
 
 class TestCliContract(unittest.TestCase):
     project_root = pathlib.Path(__file__).resolve().parents[1]
+
+    def test_current_named_branch_uses_live_git_state(self):
+        with patch("git_shadow.cli.run_cmd", return_value=(0, "foo/bar\n", "")):
+            self.assertEqual(current_named_branch("/tmp/project"), "foo/bar")
+        with patch("git_shadow.cli.run_cmd", return_value=(1, "", "not a repo")):
+            self.assertEqual(current_named_branch("/tmp/project"), "")
 
     def test_help_lists_supported_edge_recovery_command(self):
         result = subprocess.run(
@@ -19,6 +28,8 @@ class TestCliContract(unittest.TestCase):
         self.assertIn("run <host> [agent] --watch", result.stdout)
         self.assertIn("轻量能力探针", result.stdout)
         self.assertIn("失败自动降级为同步模式", result.stdout)
+        self.assertIn("remote ensure <host> cloudcli", result.stdout)
+        self.assertIn("--no-bootstrap", result.stdout)
 
 
 if __name__ == "__main__":

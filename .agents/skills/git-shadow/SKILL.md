@@ -7,10 +7,12 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 
 `git-shadow` 是面向现代云端开发与 AI Coding Agent 的极速流式投影工具。它严格恪守**三态隔离公理**：
 1. **公有代码走 Git**（远端骨干网直接 clone/fetch 或本地 P2P 流式推送）；
-2. **私有配置走影子**（受 `.gitignore` 与 `.gitshadow` 保护的敏感文件通过按远端目标隔离的 Manifest/CAS 原子投影，禁止静默覆盖另一端修改）；
+2. **私有配置走影子**（`.gitshadow` 是唯一正向白名单契约；候选文件再经 `.shadowignore` 排除，通过按远端目标隔离的 Manifest/CAS 原子投影，禁止静默覆盖另一端修改）；
 3. **重型依赖走原生**（远端 Linux 宿主原生就地安装，绝不跨平台对拷）。
 
 分层同步硬边界：Git 追踪文件只交给 Git；`.gitshadow` 文件只交给 Shadow Manifest/CAS；未提交追踪文件默认不同步（只有显式 `--wip` 才作为一次性补丁投影）。
+
+**工作区身份律**：命名 Git 工作区的身份是 `(repo, branch)`，不是 repo 单独一个维度。分支 `foo/bar` 的远端路径必须保持 Git ref 的层级语义：`~/wkspace/<repo>/foo/bar`。CloudCLI project path、Shadow CAS scope、binding memory 与 Git checkout 必须全部指向同一条路径。
 
 ---
 
@@ -49,6 +51,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 - **CloudCLI 鉴权自愈与深链挂载**：👉 [CLOUDCLI_DEEPLINK_AUTH.md](references/CLOUDCLI_DEEPLINK_AUTH.md)
   *覆盖：401 令牌过期读取 `auth.db` 离线签发 7 天 HS256 JWT、409 项目存在幂等复用、乐观深链。*
 - **持续自动同步与租约自毁**：👉 [CONTINUOUS_SILENT_SYNC.md](references/CONTINUOUS_SILENT_SYNC.md)
+- **分支工作区路由法则**：👉 [Branch-Scoped Workspace Routing ADR](../../../docs/decisions/2026-09-27_BRANCH_SCOPED_WORKSPACE_ROUTING_LAW.md)
   *覆盖：10 分钟 Lease 超时内存回收、Windows/Linux 监听机制差异、双端 Edge 对称演进路线。*
 
 ---
@@ -68,7 +71,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 
 ### 1. 跨平台路径防污染 (Platform Isolation)
 - **Windows MSYS2 绝对路径陷阱**：在 Windows Git Bash 下，严禁将 `/` 开头的绝对路径（如 `-d /home/...`）直接裸传给外部工具，MSYS2 会强行将其转译为 `D:/Tool/...` 等本地盘符；
-- **防御要求**：远端路径必须优先依赖远端环境探针感知的 `$HOME` 展开（如自动解析为 `/home/ubuntu/wkspace/<repo_name>`）。
+- **防御要求**：远端路径必须优先依赖远端环境探针感知的 `$HOME` 展开；命名 Git 分支必须遵循 branch-scoped route，例如仓库 `AI` 的 `foo/bar` 固定映射到 `/home/ubuntu/wkspace/AI/foo/bar`，严禁回退为多个分支共用 `wkspace/AI`。
 
 ### 2. SSH 非交互管道防冲突 (SSH Clean Channel)
 - 远端或本地 `~/.ssh/config` 可能配置了 `RemoteCommand ... zellij` 或 `RequestTTY yes`；

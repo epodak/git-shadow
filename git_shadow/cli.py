@@ -6,6 +6,7 @@ CLI 命令行交互主入口：支持探针诊断、SSH凭证同步、CloudCLI W
 import os
 import sys
 import argparse
+import shlex
 import json
 import hashlib
 import threading
@@ -22,10 +23,13 @@ from .shadow_sync import ShadowManifestStore
 from .watcher import LocalChangeWatcher
 from .install import install_wrappers
 from .probe import RemoteProbe
+from .remote_bootstrap import RemoteBootstrapManager, format_cloudcli_plan
 from .auth import AuthManager
 from .tree import DiffTreeRenderer
 from .git_sync import auto_fast_forward_pull
 from .daemon import LocalDaemonManager
+from .binding import get_project_binding, remove_project_binding
+from .workspace_identity import workspace_relative_path
 from .utils import (
     log_info,
     log_success,
@@ -56,6 +60,9 @@ def print_help():
                     • 指定 cloudcli 时，先做轻量能力探针；可用才拉起 Web，失败自动降级为同步模式
                     • 指定终端 Agent 时，极速秒级直通交互终端
   {Colors.GREEN}probe <host>{Colors.RESET}        诊断探针：感知远端系统、用户主目录、工作区目录树与 AI 工具状态
+  {Colors.GREEN}remote status <host> cloudcli{Colors.RESET} 查看远端 CloudCLI 能力状态
+  {Colors.GREEN}remote plan <host> cloudcli{Colors.RESET}   审计将通过 SSH 执行的安装/配置计划
+  {Colors.GREEN}remote ensure <host> cloudcli{Colors.RESET} 一键通过现有 SSH 安装、配置并启动 CloudCLI
   {Colors.GREEN}auth sync <host>{Colors.RESET}    一键净化同步本地 SSH/GitHub 鉴权密钥到远端 Linux，打通 Git 权限
   {Colors.GREEN}up <host>{Colors.RESET}           一键投影当前工作区到远端，并进入交互式终端
   {Colors.GREEN}push <host>{Colors.RESET}         通过边缘任务对齐 Git 基线并执行 .gitshadow CAS，不进入终端
@@ -75,7 +82,7 @@ def print_help():
   {Colors.GREEN}run <host> [agent] --watch{Colors.RESET} 持续双向同步 .gitshadow，并对干净 Git 分支自动 ff-only 拉取
 
 {Colors.BOLD}选项 (Options):{Colors.RESET}
-  {Colors.YELLOW}-d, --dest <dir>{Colors.RESET}    自定义远端存放目录 (默认自动感知: ~/wkspace/项目名 或 ~/workspace/项目名)
+  {Colors.YELLOW}-d, --dest <dir>{Colors.RESET}    自定义远端存放目录 (Git 默认: ~/wkspace/<repo>/<branch...>)
   {Colors.YELLOW}--wip{Colors.RESET}               显式把未提交的 Git 修改作为一次性补丁投影；默认不传输
   {Colors.YELLOW}--watch{Colors.RESET}             保持本地进程运行，静默监听 .gitshadow 变化并提交 CAS 任务
   {Colors.YELLOW}--git-pull-interval <sec>{Colors.RESET}  --watch 时定期对干净分支执行 Git fetch + ff-only pull（默认 10 秒）
@@ -86,6 +93,7 @@ def print_help():
   {Colors.YELLOW}-a, --agent <cmd>{Colors.RESET}   指定在远端运行的 AI 命令
   {Colors.YELLOW}--provider <name>{Colors.RESET}   CloudCLI 供应商 (codex/claude/cursor/opencode)
   {Colors.YELLOW}--cloudcli-url <url>{Colors.RESET} VPS 内部 CloudCLI 地址 (默认 http://127.0.0.1:3001)
+  {Colors.YELLOW}--no-bootstrap{Colors.RESET}       禁止 run cloudcli 自动安装/启动缺失的远端 CloudCLI
   {Colors.YELLOW}-v, --version{Colors.RESET}       输出当前版本号
   {Colors.YELLOW}-h, --help{Colors.RESET}          查看帮助信息
 
@@ -96,12 +104,23 @@ def print_help():
   git shadow run aws                  # 自动探测远端已就绪的 AI Agent，列出数字菜单让你挑选
   git shadow auth sync aws            # 一键打通远端 VPS 的 GitHub SSH 权限
   git shadow probe aws                # 诊断远端主机系统与环境
+  git shadow remote ensure aws cloudcli # 不进入 SSH，直接从本地准备远端 CloudCLI
   git shadow diff                     # 查看本地有哪些 .env / 密钥会被影子带走 (树状图呈现)
   git shadow run aws cloudcli --provider codex  # 远端批量执行并打开专属会话
 """)
 
 
 SUPPORTED_PROVIDERS = ("codex", "claude", "cursor", "opencode")
+
+
+def current_named_branch(project_root: str) -> str:
+    """Return the currently checked-out named branch, or an empty string."""
+    code, out, _ = run_cmd(
+        ["git", "branch", "--show-current"],
+        cwd=project_root,
+        check=False,
+    )
+    return out.strip() if code == 0 else ""
 
 
 def choose_provider(requested: Optional[str]) -> str:
@@ -322,6 +341,50 @@ def main(args: Optional[List[str]] = None):
             log_error("本地 wrapper 安装失败: %s" % exc)
             sys.exit(1)
 
+    # 1.5 远端能力自举：直接复用现有 SSH 安装/配置远端应用
+    if subcmd == "remote":
+        if len(sub_args) < 3:
+            log_error("用法: git shadow remote status|plan|ensure <host> cloudcli")
+            sys.exit(1)
+        remote_action, target_host, capability_name = sub_args[0], sub_args[1], sub_args[2].lower()
+        if capability_name != "cloudcli":
+            log_error("当前 remote bootstrap 仅支持 cloudcli")
+            sys.exit(1)
+
+        repo = RepoState(".")
+        engine = ShadowEngine(repo=repo, remote_host=target_host)
+        bootstrap = RemoteBootstrapManager(engine)
+
+        if remote_action == "status":
+            print(json.dumps(bootstrap.probe_cloudcli(), ensure_ascii=False, indent=2))
+            sys.exit(0)
+        if remote_action == "plan":
+            print(format_cloudcli_plan(target_host))
+            print()
+            for index, step in enumerate(bootstrap.cloudcli_plan(), start=1):
+                print("  %d. %s" % (index, step))
+            sys.exit(0)
+        if remote_action == "ensure":
+            log_info("正在通过现有 SSH 为 [%s] 安装/配置 CloudCLI..." % target_host)
+            result = bootstrap.ensure_cloudcli()
+            if result.get("success"):
+                metadata = result.get("metadata", {})
+                log_success(
+                    "CloudCLI 已就绪: version=%s, service=%s"
+                    % (
+                        metadata.get("cloudcli_version", ""),
+                        metadata.get("service", "existing"),
+                    )
+                )
+                print(json.dumps(result.get("after", {}), ensure_ascii=False, indent=2))
+                sys.exit(0)
+            log_error("CloudCLI 远端自举失败: %s" % result.get("error", "unknown error"))
+            log_info("可先运行 `git shadow remote plan %s cloudcli` 审计安装计划。" % target_host)
+            sys.exit(1)
+
+        log_error("未知 remote 操作: %s (支持: status, plan, ensure)" % remote_action)
+        sys.exit(1)
+
     # 2. auth 子命令族 (例如: git shadow auth sync <host> [--key <key>])
     if subcmd == "auth":
         if not sub_args:
@@ -360,27 +423,48 @@ def main(args: Optional[List[str]] = None):
         probe = RemoteProbe(target_host)
         probe.scan(engine)
         probe.display_report()
+        cloudcli_capability = probe.data.get("cloudcli_capability", {})
+        if (
+            not cloudcli_capability.get("available")
+            and RemoteBootstrapManager.can_repair_cloudcli(cloudcli_capability)
+        ):
+            log_info(
+                "CloudCLI 可从本地直接修复，无需手工 SSH: %s"
+                % RemoteBootstrapManager(engine).install_command()
+            )
         sys.exit(0)
 
     # 3.4 clean 清理远端影子工作区与本地绑定
     if subcmd == "clean":
         target_host = sub_args[0] if sub_args else None
         repo = RepoState(".")
-        binding = get_project_binding(repo.root_dir)
+        binding = get_project_binding(
+            repo.root_dir,
+            repo.branch if repo.is_git else None,
+        )
         if not target_host and binding:
             target_host = binding.get("host")
         if not target_host:
             log_error("用法: git shadow clean <host> [remote_dir]")
             sys.exit(1)
-        target_dir = sub_args[1] if len(sub_args) > 1 else (binding.get("remote_dir") if binding else f"~/wkspace/{repo.repo_name}")
+        default_target = "~/wkspace/" + workspace_relative_path(
+            repo.repo_name,
+            repo.branch if repo.is_git else None,
+            is_git=repo.is_git,
+        )
+        target_dir = sub_args[1] if len(sub_args) > 1 else (
+            binding.get("remote_dir") if binding else default_target
+        )
 
-        clean_cmd = f"rm -rf \"{target_dir}\""
+        clean_cmd = "rm -rf -- %s" % shlex.quote(target_dir)
         edge_client = EdgeClient(target_host)
         res = edge_client._run_ssh(clean_cmd)
         if res.returncode == 0:
             log_success(f"已成功删除远端影子工作区: {target_host}:{target_dir}")
-            from .binding import remove_project_binding
-            remove_project_binding(repo.root_dir)
+            remove_project_binding(
+                repo.root_dir,
+                repo.branch if repo.is_git else None,
+            )
             log_info("已同步解除本地项目的 VPS 记忆绑定。")
             sys.exit(0)
         else:
@@ -541,6 +625,7 @@ def main(args: Optional[List[str]] = None):
             agent=None,
             provider=None,
             cloudcli_url=None,
+            no_bootstrap=True,
         )
         repo = RepoState(worker_root)
         remote_host = target_host
@@ -564,6 +649,7 @@ def main(args: Optional[List[str]] = None):
         parser.add_argument("-a", "--agent", default=None, help="远端 AI Agent 命令")
         parser.add_argument("--provider", default=None, help="CloudCLI AI 供应商: codex/claude/cursor/opencode")
         parser.add_argument("--cloudcli-url", default=None, help="VPS 内部 CloudCLI 地址，默认读取 GIT_SHADOW_CLOUDCLI_BASE_URL")
+        parser.add_argument("--no-bootstrap", action="store_true", help="禁止 run cloudcli 自动准备远端 CloudCLI")
 
         try:
             opts, remaining = parser.parse_known_args(sub_args)
@@ -688,6 +774,8 @@ def main(args: Optional[List[str]] = None):
         last_pull = now
         last_git_pull = now
         git_pull_blocked = False
+        expected_branch = repo.branch if repo.is_git else ""
+        last_branch_check = 0.0
         git_pull_interval = max(2.0, float(opts.git_pull_interval))
         shadow_pull_interval = max(3.0, float(getattr(opts, "shadow_pull_interval", 10.0)))
         log_info("已进入个人持续同步：.gitshadow 自动双向 CAS，Git 仅对干净分支执行 ff-only 自动拉取。")
@@ -703,8 +791,22 @@ def main(args: Optional[List[str]] = None):
                     if stop_event.is_set():
                         break
                     now = time.monotonic()
+                    if expected_branch and now - last_branch_check >= 1.0:
+                        actual_branch = current_named_branch(repo.root_dir)
+                        last_branch_check = now
+                        if actual_branch != expected_branch:
+                            shown = actual_branch or "<detached>"
+                            log_warn(
+                                "检测到本地 Git 分支已从 [%s] 切换为 [%s]；"
+                                "为防止 Shadow 串到旧分支工作区，当前 watcher 已停止。"
+                                "请在新分支重新运行 git shadow watch/run --watch。"
+                                % (expected_branch, shown)
+                            )
+                            stop_event.set()
+                            break
+
                     current = shadow_snapshot() if (not local_watcher.native or notified) else previous
-                    
+
                     # 1. 本地优先：检测到本地影子文件改动，立即推送到远端 (Local -> Remote Push)
                     if current != previous:
                         try:
@@ -769,7 +871,11 @@ def main(args: Optional[List[str]] = None):
             # 仅在未指定目标时，才调用全景探针扫描以呈现交互式选择菜单
             probe = RemoteProbe(remote_host)
             probe.scan(engine)
-            preferred_ws = probe.get_preferred_workspace_dir(repo.repo_name) if not remote_dir else None
+            preferred_ws = probe.get_preferred_workspace_dir(
+                repo.repo_name,
+                repo.branch if repo.is_git else None,
+                is_git=repo.is_git,
+            ) if not remote_dir else None
 
             available_agents = probe.get_available_agents()
             print(f"\n{Colors.BOLD}🤖 远端主机 [{remote_host}] 就绪的环境与 AI 智能体:{Colors.RESET}")
@@ -806,12 +912,41 @@ def main(args: Optional[List[str]] = None):
             # Capability probing is the gate for optimistic Web launch. A host
             # that can still sync files but cannot serve CloudCLI must not be
             # treated as a failed git-shadow host.
-            capability = RemoteProbe(remote_host).probe_cloudcli(engine)
+            bootstrap = RemoteBootstrapManager(engine)
+            capability = bootstrap.probe_cloudcli()
+            if (
+                not capability.get("available")
+                and not opts.no_bootstrap
+                and bootstrap.can_repair_cloudcli(capability)
+            ):
+                log_info(
+                    "CloudCLI 当前未就绪（%s），正在复用现有 SSH 自动安装/启动..."
+                    % capability.get("reason", "unavailable")
+                )
+                bootstrap_result = bootstrap.ensure_cloudcli()
+                if bootstrap_result.get("success"):
+                    capability = bootstrap_result.get("after", {})
+                    metadata = bootstrap_result.get("metadata", {})
+                    log_success(
+                        "CloudCLI 远端自举完成 (service=%s, version=%s)"
+                        % (
+                            metadata.get("service", "unknown"),
+                            metadata.get("cloudcli_version", ""),
+                        )
+                    )
+                else:
+                    log_warn(
+                        "CloudCLI 自动准备未完成: %s"
+                        % bootstrap_result.get("error", "unknown error")
+                    )
+
             if not capability.get("available"):
                 reason = capability.get("reason", "CloudCLI unavailable")
                 log_warn(
                     "CloudCLI 当前不可用（%s），已优雅降级为 sync-only："
-                    "Git/Shadow 投影继续，不打开浏览器，也不提交无效 Session 请求。" % reason
+                    "Git/Shadow 投影继续，不打开浏览器，也不提交无效 Session 请求。"
+                    " 可执行 `%s` 手动重试。"
+                    % (reason, bootstrap.install_command())
                 )
                 try:
                     submit_projection(include_cloudcli=False)
@@ -866,7 +1001,11 @@ def main(args: Optional[List[str]] = None):
     elif subcmd == "up":
         probe = RemoteProbe(remote_host)
         probe.scan(engine)
-        preferred_ws = probe.get_preferred_workspace_dir(repo.repo_name) if not remote_dir else None
+        preferred_ws = probe.get_preferred_workspace_dir(
+                repo.repo_name,
+                repo.branch if repo.is_git else None,
+                is_git=repo.is_git,
+            ) if not remote_dir else None
 
         if preferred_ws:
             engine.remote_dir = preferred_ws

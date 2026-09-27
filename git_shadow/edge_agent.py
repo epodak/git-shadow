@@ -511,6 +511,108 @@ class EdgeExecutor:
                     raise EdgeError("archive contains an unsafe path") from exc
             archive.extractall(str(target))
 
+    @staticmethod
+    def _branch_route_parts(branch: str) -> List[str]:
+        value = str(branch or "").strip()
+        if value.startswith("refs/heads/"):
+            value = value[len("refs/heads/"):]
+        if not value or value.startswith("/") or value.endswith("/") or "//" in value:
+            raise EdgeError("branch is not routable: %s" % value)
+        parts = value.split("/")
+        for part in parts:
+            if (
+                not part
+                or part in (".", "..")
+                or "\\" in part
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in part)
+            ):
+                raise EdgeError("branch contains an unsafe path component")
+        return parts
+
+    def _workspace_route(self, step: Dict[str, Any]) -> Dict[str, Any]:
+        """Migrate the legacy <workspace>/<repo> Git checkout into branch layout.
+
+        The migration renames the whole legacy worktree first, then recreates
+        the repository name as a container directory.  Dirty/untracked files
+        move with the worktree; nothing is reset or copied.
+        """
+        repo_root = ensure_inside(str(step.get("repo_root", "")), self.home)
+        target = ensure_inside(str(step.get("target", "")), self.home)
+        requested_branch = str(step.get("branch") or "").strip()
+        self._branch_route_parts(requested_branch)
+
+        try:
+            target.relative_to(repo_root)
+        except ValueError as exc:
+            raise EdgeError("branch workspace target is outside repository container") from exc
+
+        legacy_git = repo_root / ".git"
+        if not legacy_git.is_dir():
+            return {"migrated": False, "repo_root": str(repo_root)}
+
+        legacy_branch, _ = run_checked(
+            ["git", "branch", "--show-current"],
+            cwd=repo_root,
+            timeout=30,
+        )
+        legacy_branch = legacy_branch.strip()
+        if not legacy_branch:
+            short_sha, _ = run_checked(
+                ["git", "rev-parse", "--short=12", "HEAD"],
+                cwd=repo_root,
+                timeout=30,
+            )
+            legacy_branch = "__detached__/" + short_sha.strip()
+
+        legacy_parts = self._branch_route_parts(legacy_branch)
+        staging = repo_root.parent / (
+            repo_root.name + ".git-shadow-migrate-" + str(os.getpid())
+        )
+        if staging.exists():
+            staging = repo_root.parent / (
+                repo_root.name
+                + ".git-shadow-migrate-"
+                + str(os.getpid())
+                + "-"
+                + str(int(time.time() * 1000))
+            )
+
+        repo_root.rename(staging)
+        created_dirs: List[pathlib.Path] = []
+        try:
+            repo_root.mkdir(parents=True, exist_ok=False)
+            created_dirs.append(repo_root)
+            parent = repo_root
+            for part in legacy_parts[:-1]:
+                parent = parent / part
+                parent.mkdir(exist_ok=False)
+                created_dirs.append(parent)
+            destination = parent / legacy_parts[-1]
+            if destination.exists():
+                raise EdgeError(
+                    "legacy workspace migration target already exists: %s" % destination
+                )
+            staging.rename(destination)
+        except Exception:
+            # Roll back only directories created by this migration, and only
+            # while they remain empty.  Never delete concurrent user content.
+            for directory in reversed(created_dirs):
+                try:
+                    directory.rmdir()
+                except OSError:
+                    break
+            if staging.exists() and not repo_root.exists():
+                staging.rename(repo_root)
+            raise
+
+        return {
+            "migrated": True,
+            "from": str(repo_root),
+            "to": str(destination),
+            "branch": legacy_branch,
+            "requested_branch": requested_branch,
+        }
+
     def _workspace_prepare(self, step: Dict[str, Any]) -> None:
         target = ensure_inside(str(step.get("target", "")), self.home)
         remote_url = str(step.get("remote_url") or "").strip()
@@ -524,8 +626,19 @@ class EdgeExecutor:
             git_env = os.environ.copy()
             git_env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
             try:
+                clone_args = [
+                    "git",
+                    "clone",
+                    "--branch",
+                    branch,
+                    "--single-branch",
+                    "--",
+                    remote_url,
+                    str(target),
+                ]
+                branch_refspec = "+refs/heads/%s:refs/remotes/origin/%s" % (branch, branch)
                 if not target.exists():
-                    run_checked(["git", "clone", "--", remote_url, str(target)], timeout=60, env=git_env)
+                    run_checked(clone_args, timeout=60, env=git_env)
                 elif not (target / ".git").exists():
                     if any(target.iterdir()):
                         try:
@@ -533,7 +646,16 @@ class EdgeExecutor:
                         except EdgeError:
                             run_checked(["git", "init"], cwd=target)
                         run_checked(["git", "remote", "add", "origin", remote_url], cwd=target)
-                        run_checked(["git", "fetch", "origin"], cwd=target, timeout=60, env=git_env)
+                        run_checked(
+                            ["git", "config", "remote.origin.fetch", branch_refspec],
+                            cwd=target,
+                        )
+                        run_checked(
+                            ["git", "fetch", "origin", branch_refspec],
+                            cwd=target,
+                            timeout=60,
+                            env=git_env,
+                        )
                         self._clear_snapshot_paths(target, preexisting)
                         try:
                             run_checked(["git", "checkout", "-B", branch, "origin/" + branch], cwd=target, timeout=60)
@@ -542,9 +664,20 @@ class EdgeExecutor:
                             raise
                         self._restore_workspace(target, preexisting)
                     else:
-                        run_checked(["git", "clone", "--", remote_url, str(target)], timeout=60, env=git_env)
+                        run_checked(clone_args, timeout=60, env=git_env)
                 else:
-                    run_checked(["git", "fetch", "origin"], cwd=target, timeout=60, env=git_env)
+                    # Converge even a manually created / legacy full clone to
+                    # this workspace's single-branch identity.
+                    run_checked(
+                        ["git", "config", "remote.origin.fetch", branch_refspec],
+                        cwd=target,
+                    )
+                    run_checked(
+                        ["git", "fetch", "origin", branch_refspec],
+                        cwd=target,
+                        timeout=60,
+                        env=git_env,
+                    )
                     run_checked(["git", "checkout", branch], cwd=target, timeout=60)
                 if (target / ".git").exists() and not (target / ".git" / "config").exists():
                     raise EdgeError("Git workspace was not initialized: %s" % target)
@@ -1076,6 +1209,8 @@ class EdgeExecutor:
         if action == "exec":
             self._run_streaming(job_id, str(step.get("id") or "step"), step)
             return {}
+        if action == "workspace.route":
+            return self._workspace_route(step)
         if action == "workspace.prepare":
             self._workspace_prepare(step)
             return {}
