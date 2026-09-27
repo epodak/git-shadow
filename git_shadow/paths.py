@@ -28,6 +28,10 @@ def git_shadow_home(create: bool = True) -> pathlib.Path:
     ).expanduser()
     if create:
         root.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(root, 0o700)
+        except OSError:
+            pass
     return root
 
 
@@ -52,10 +56,26 @@ def migrate_legacy_local_state(root: Optional[pathlib.Path] = None) -> pathlib.P
 
     legacy = LEGACY_LOCAL_STATE
     if legacy.exists() and legacy.resolve() != target.resolve():
-        for name in ("bindings.json", "shadows", "conflicts", "daemon"):
+        for name in (
+            "bindings.json",
+            "shadows",
+            "conflicts",
+            "daemon",
+            "cloudcli.pid",
+            "logs",
+        ):
             _move_if_absent(legacy / name, target / name)
         try:
             legacy.rmdir()
+        except OSError:
+            pass
+
+    legacy_share = LEGACY_LOCAL_SHARE
+    if legacy_share.exists() and legacy_share.resolve() != target.resolve():
+        for name in ("bin", "apps", "runtime", "runs", "services"):
+            _move_if_absent(legacy_share / name, target / name)
+        try:
+            legacy_share.rmdir()
         except OSError:
             pass
     return target
