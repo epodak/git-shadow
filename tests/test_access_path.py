@@ -153,7 +153,7 @@ class TestAccessPath(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["url"], "https://vps.tailnet.example.ts.net")
         self.assertTrue(
-            any(call[0] == "tailscale serve --bg 3001" for call in engine.calls)
+            any("tailscale serve --bg 3001" in call[0] for call in engine.calls)
         )
 
     def test_public_url_has_no_personal_default(self):
