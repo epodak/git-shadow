@@ -302,9 +302,8 @@ EOF
             ver_tag = f" (v{cc_ver})" if cc_ver else ""
             agents.append({
                 "id": "cloudcli",
-                "name": f"CloudCLI Web 远程工作台{ver_tag} (https://cli.daduiot.com)",
+                "name": f"CloudCLI Web 远程工作台{ver_tag}",
                 "type": "web",
-                "url": "https://cli.daduiot.com"
             })
 
         apps = self.data.get("apps", {})
@@ -352,6 +351,26 @@ EOF
         ws_display = " ".join([f"~/{w}" for w in ws.split()]) if ws else "未发现标准工作区目录"
         print(f"  • 感知工作目录: {Colors.GREEN}{ws_display}{Colors.RESET}")
 
+        ts = self.data.get("tailscale", {})
+        if ts:
+            print(f"\n{Colors.BOLD}🕸️  Tailscale 私网接入:{Colors.RESET}")
+            if ts.get("same_tailnet"):
+                conn = ts.get("connection", "unknown")
+                dns_name = ts.get("remote_dns") or (ts.get("remote_ips") or [""])[0]
+                print(
+                    f"  • Tailnet:      {Colors.GREEN}✔ 可互访{Colors.RESET} "
+                    f"{Colors.DIM}({conn}){Colors.RESET}"
+                )
+                if dns_name:
+                    print(f"  • 远端节点:     {Colors.CYAN}{dns_name}{Colors.RESET}")
+            else:
+                local_reason = ts.get("local_reason", "unknown")
+                remote_reason = ts.get("remote_reason", "unknown")
+                print(
+                    f"  • Tailnet:      {Colors.DIM}未建立可互访关系{Colors.RESET} "
+                    f"{Colors.DIM}(local={local_reason}, remote={remote_reason}){Colors.RESET}"
+                )
+
         # 2. GitHub 认证
         gh = self.data.get("github", {})
         if gh.get("ok"):
@@ -368,7 +387,7 @@ EOF
         if cc_cap.get("available"):
             ver_text = f"v{cc_ver}" if cc_ver else ""
             print(f"  • 运行状态:     {Colors.GREEN}✔ 可连接{Colors.RESET} {Colors.DIM}(PID: {cc_cap.get('pid') or cc_srv.get('pid')}, 端口: {cc_cap.get('port') or cc_srv.get('port')}){Colors.RESET} {Colors.CYAN}{ver_text}{Colors.RESET}")
-            print(f"  • 接入地址:     {Colors.CYAN}https://cli.daduiot.com{Colors.RESET} (能力探针通过，可创建 Session)")
+            print(f"  • 接入地址:     {Colors.DIM}由 Access Path 动态选择（Tailscale Serve / 配置的公网 URL）{Colors.RESET}")
         elif cc_srv.get("running"):
             print(f"  • 运行状态:     {Colors.YELLOW}⚠ 进程存在但服务不可连接{Colors.RESET} ({cc_cap.get('reason', 'unreachable')})")
         else:
