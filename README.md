@@ -1,321 +1,557 @@
 # git-shadow
 
-<p align="center">
-  <b>Git clones the repo. Shadow overlays the secrets.</b><br>
-  Instant cloud workspace projection for remote AI coding agents (OpenCode, Claude Code, Aider, Codex, etc.).
-</p>
+> Git 负责代码事实，Shadow 负责私有状态，远端原生环境负责运行。
+>
+> **Git clones the repo. Shadow overlays the secrets.**
 
-<p align="center">
-  <a href="#key-features">Key Features</a> •
-  <a href="#why-git-shadow">Why git-shadow</a> •
-  <a href="#architecture">Architecture</a> •
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#chinese-readme">中文说明</a>
-</p>
+git-shadow 用于把本地开发工作区快速投影到远端 Linux/macOS 主机，让 OpenCode、Claude Code、Codex、Aider、CloudCLI 等 AI Agent 在远端原生环境中工作，同时保持本地代码、私有配置和远端运行环境之间的职责边界。
+
+[中文](#中文) · [English](#english) · [架构](#架构) · [快速开始](#快速开始) · [分支工作区](#分支工作区) · [远端能力自举](#远端能力自举)
 
 ---
 
-## 💡 Why git-shadow?
+# 中文
 
-Running AI coding agents (like **OpenCode**, **Claude Code**, or **Aider**) inside remote cloud servers (AWS EC2, Hetzner, DigitalOcean, etc.) is incredible:
-- **Zero latency** to AI provider APIs (Anthropic, OpenAI).
-- **Clean, native Linux environment** with fast package managers (`pnpm`, `uv`, `cargo`).
-- **No Windows path / line-ending quirks**.
+## 为什么需要 git-shadow
 
-**However, bridging your local work with the cloud has been painful:**
-- ❌ **Network Mounts (SSHFS / Samba)**: Running `git status` or `ripgrep` over WAN hangs or crashes the agent due to high RTT metadata round-trips.
-- ❌ **Full Sync (Rsync / Mutagen)**: Uploading `node_modules` or `.venv` wastes gigabytes of bandwidth and breaks binary `.node` / `.so` compatibility across platforms.
-- ❌ **Pure Git Clone**: If you only clone, your local `.env`, private keys, local configs, and uncommitted WIP changes are missing. The AI can't run tests!
+直接把本地开发环境搬到 VPS，通常会遇到几个矛盾：
 
-### Enter `git-shadow`
+- **SSHFS / Samba**：跨公网文件元数据访问延迟高，git status、ripgrep、依赖扫描容易变慢。
+- **Rsync / 全量同步**：node_modules、.venv、构建缓存体积大，而且跨 Windows/macOS/Linux 复制二进制依赖经常不可用。
+- **只用 Git clone**：.env、私钥、本地配置、未追踪调试文件不会进入 Git，远端 Agent 拿不到完整运行上下文。
+- **直接让 AI 操作本地机器**：长时间任务会占住本地电脑，也扩大了误操作影响范围。
 
-`git-shadow` splits your workspace into **Three Layers**:
-1. **Base Layer (Code Base)**: Let the remote server `git clone` / `git checkout` directly from GitHub via its ultra-fast backbone network (takes ~2 seconds).
-2. **Shadow Layer (Secrets & Overlays)**: Automatically detects files ignored by `.gitignore` (e.g. `.env`, `.pem`, `config.local.json`) and streams them over an encrypted SSH pipe in milliseconds (< 50 KB).
-3. **Native Layer (Heavy Dependencies)**: Dependencies (`node_modules`, `venv`) are installed natively on the remote Linux host — never transferred across platforms.
-4. **WIP Layer (Opt-in Only)**: Uncommitted local diffs are never synchronized by default; pass `--wip` when a remote AI agent explicitly needs a one-time patch.
+git-shadow 不试图用一种同步机制解决所有问题，而是把工作区拆成不同所有权层。
 
-Named Git branches are routed to branch-scoped remote workspaces. For example,
-repository `AI` on branch `foo/bar` maps deterministically to
-`~/wkspace/AI/foo/bar`. The remote checkout is prepared with a single-branch
-fetch refspec, so switching the local checkout to another branch does not reuse
-or mutate the previous branch's workspace. Plain non-Git folders keep the
-simpler `~/wkspace/<project>` route.
+## 核心模型
 
----
+| 层 | 内容 | 同步方式 | 原则 |
+| --- | --- | --- | --- |
+| Git Lane | 已提交代码、分支、提交历史 | Git clone/fetch/pull/push | Git 是代码事实源 |
+| Shadow Lane | .env、私钥、本地配置、调试资产 | .gitshadow + CAS + SSH | 只同步显式白名单 |
+| Native Runtime Lane | node_modules、venv、编译缓存 | 在远端原生安装 | 不跨平台搬运重型依赖 |
+| WIP Lane | 未提交 tracked 修改 | --wip 一次性 patch | 默认不自动传输 |
 
-## ⚡ Architecture
+最重要的边界是：
 
-```mermaid
-flowchart TD
-    subgraph Local [Local Machine (Windows / macOS / Linux)]
-        A[Git Codebase] -- Push / Branch Ref --> GH[GitHub / Remote Git]
-        B[Local .gitignore Files<br/>.env, *.secret, local configs] -- Compressed Stream (<50KB) --> SSH_PIPE[Encrypted SSH Pipe]
-        C[.gitshadow Manifest + CAS] -- Atomic Shadow Sync --> SSH_PIPE
-    end
+~~~text
+GitTracked != Shadow != Runtime != WIP
+~~~
 
-    subgraph Remote [Cloud Server (AWS / VPS / Linux)]
-        GH -- Fast Backbone Clone/Pull --> R_DIR[Remote Workspace]
-        SSH_PIPE -- CAS Shadow Overlay --> R_DIR
-        R_DIR --> D[Native Package Install<br/>pnpm / uv / cargo]
-        D --> AI[AI Agent Running at Native SSD Speed<br/>OpenCode / Claude Code]
-        AI -- Commit & Push --> GH
-    end
-```
+Shadow 不是第二套 Git，也不是 rsync 替代品。
 
----
+## 架构
 
-## 🚀 Quick Start
+README 不再使用 Mermaid，避免不同 GitHub/Markdown 渲染环境下图表失效。核心数据流直接表示为：
 
-### 1. Installation & Git CLI Registration
+~~~text
+本地工作区
+│
+├─ Git tracked files
+│      │
+│      └──────────────→ Git Remote
+│                           │
+│                           └─ clone/fetch → 远端分支工作区
+│
+├─ .gitshadow 白名单
+│      │
+│      └─ Manifest + CAS + SSH ───────────→ Shadow Overlay
+│
+├─ 未提交 tracked 修改
+│      │
+│      └─ 默认不传；显式 --wip 才发送
+│
+└─ node_modules / venv / build cache
+       │
+       └─ 不同步，在远端原生生成
 
-Zero external dependencies! Works with pure Python 3.8+:
+远端工作区
+│
+├─ Git baseline
+├─ Shadow private state
+├─ Native dependencies
+└─ AI Agent / CloudCLI
+~~~
 
-#### Option A: Install via Pip (Standard)
-```bash
-git clone https://github.com/epodak/git-shadow.git
-cd git-shadow
-pip install -e .
-```
+## 分支工作区
 
-#### Option B: Standalone Wrapper (Zero Environment Pollution / Live Reload)
-You can also place a lightweight wrapper script named `git-shadow` (or `git-shadow.cmd` on Windows) into any directory in your system `$PATH` (e.g. `~/.local/bin` or `D:/Tool/DIY`):
+Git 项目的远端工作区身份不是单纯的仓库名，而是：
 
-```bash
-#!/bin/bash
-export PYTHONPATH="/path/to/git-shadow:$PYTHONPATH"
-exec python -m git_shadow.cli "$@"
-```
+~~~text
+WorkspaceIdentity = Repository + Branch
+~~~
 
-The same wrappers can be generated from the checkout:
+例如：
 
-```bash
-python3 -m git_shadow.cli install ~/.local/bin
-```
+~~~text
+repo:   AI
+branch: foo/bar
 
-`pip install -e .` is optional for the local controller. The VPS does not need
-the package or pip: `edge install`/`service load` upload standalone Python
-executors and run them with the VPS's existing `python3`.
+→ ~/wkspace/AI/foo/bar
+~~~
 
-For users without a local Python installation, the planned distribution path
-is a standalone desktop client with the runtime bundled. Users should be able
-to choose a local folder and start a remote Agent without knowing Python,
-GitHub, or SSH. IDE extensions remain optional integrations. The Python
-package remains the source/developer installation path; it is not intended to
-be a permanent prerequisite for ordinary users. See the
-[local workspace launcher and managed VPS roadmap](docs/decisions/2026-09-15_IDE_EXTENSION_AND_MANAGED_VPS_ROADMAP.md).
+另一个分支：
 
-#### How `git shadow` Works (Git Subcommand Discovery)
-Git has a built-in subcommand discovery mechanism: whenever you type `git <subcommand>`, Git searches your system `$PATH` for an executable named `git-<subcommand>`.
-Therefore, having `git-shadow` in your `$PATH` enables both commands interchangeably:
-- `git shadow <command>`
-- `git-shadow <command>`
+~~~text
+repo:   AI
+branch: main
 
-> [!TIP]
-> **Help Flag Tip**: Running `git shadow --help` causes Git to intercept the call and look for its built-in HTML/manpage manuals (which throws a "documentation file not found" error). To view the complete CLI options and ASCII banner, use:
-> ```bash
-> git shadow -h
-> # or
-> git-shadow --help
-> ```
+→ ~/wkspace/AI/main
+~~~
 
-### 2. Common Usage
+这样同一个本地仓库切换分支时，不会把远端另一个分支的工作区直接 checkout 掉，也不会让不同分支错误复用同一个 Shadow CAS 基线。
 
-#### 🔍 Preview your shadow files
-Inspect which private files and uncommitted diffs will be projected to the cloud:
-```bash
-git shadow diff
-```
+首次创建 Git 工作区时，git-shadow 使用单分支 clone/fetch 语义：
 
-#### 🚀 Project & launch remote AI Agent directly
-One command will:
-1. Clone / align the current git branch on your remote host.
-2. Inject your local `.env` and secret configs.
-3. Leave tracked uncommitted code local by default (`--wip` is explicit).
-4. Launch the AI agent inside the remote workspace!
+~~~bash
+git clone --branch foo/bar --single-branch ...
+~~~
 
-```bash
-git shadow run aws-micro opencode
-```
+因此目录路由与 Git 内容模型保持一致。
 
-The current folder does not have to be a Git repository for a CloudCLI/Shadow
-workspace. Git operations remain available when an origin exists; a plain
-folder can still open a Session and prepare a remote directory:
+普通非 Git 文件夹没有真实分支身份，因此仍然使用：
 
-```bash
-cd /path/to/empty-folder
-git shadow run aws-micro cloudcli --provider codex
-```
+~~~text
+~/wkspace/<project>
+~~~
 
-For the Git code lane, `origin` is passed through unchanged and must use an
-HTTPS URL or an SSH URL/scp-style address (for example,
-`https://github.com/org/repo.git` or `git@github.com:org/repo.git`). Public HTTPS
-repositories need no remote credential setup; private repositories should use
-`git shadow auth sync <host>` before projection. A folder with no `origin`
-uses the explicit local P2P archive lane instead of silently guessing a GitHub
-repository.
+而不会人为追加 /main。
 
-#### 🌐 Batch the remote projection through the VPS edge executor
+## Shadow 契约
 
-For CloudCLI, `git-shadow` uploads a standalone VPS executor, submits one
-typed job over a clean SSH JSONL channel, streams progress asynchronously, and
-opens the exact session returned by CloudCLI:
+Shadow 的唯一正向授权入口是项目根目录的 .gitshadow。
 
-The session is created immediately after the remote project directory exists;
-Git clone/checkout and Shadow CAS projection continue afterward, so Codex can
-start observing the workspace while preparation is still running.
+示例：
 
-```bash
-git shadow edge install aws-micro
-git shadow run aws-micro cloudcli --provider codex
-git shadow edge status aws-micro <job-id>
-git shadow edge resume aws-micro <job-id>
-```
+~~~gitignore
+# .gitshadow
+.env*
+*.secret
+*.key
+*.pem
+config.local.*
+_dev_log/
+*.local.md
+~~~
 
-The VPS executor persists redacted job metadata, state, and replayable events
-under `~/.local/share/git-shadow/runs/<job-id>/`. Set
-`GIT_SHADOW_CLOUDCLI_BASE_URL` on the VPS when CloudCLI is not listening on
-`http://127.0.0.1:3001`. For a one-shot personal run, a local
-`GIT_SHADOW_CLOUDCLI_TOKEN` is also accepted: it travels only inside the
-encrypted SSH plan, is redacted from persisted metadata, and is never written
-to the workspace or event journal. A resident service should instead receive
-the token through its VPS environment.
+只有匹配这些规则的文件才有资格进入 Shadow Lane。
 
-The CloudCLI runtime is a Node application. For manual administration this
-project keeps pnpm as the project/package-manager convention. Normal users do
-not need to SSH into a fresh host to prepare CloudCLI, however: git-shadow can
-reuse the existing SSH control lane and perform an isolated user-space bootstrap
-without touching the project workspace or requiring sudo.
+如果还需要进一步排除某些文件，可以增加 .shadowignore：
 
-```bash
-git shadow remote status aws-micro cloudcli
-git shadow remote plan aws-micro cloudcli
-git shadow remote ensure aws-micro cloudcli
-```
-
-An explicit `git shadow run <host> cloudcli` also invokes this bootstrap
-automatically when CloudCLI is missing, stopped, or refusing local connections.
-Use `--no-bootstrap` when you want probing/degradation only. The managed
-runtime is kept below `~/.local/share/git-shadow`; no project
-`package-lock.json` is created. See
-[Remote Capability Bootstrap](docs/REMOTE_CAPABILITY_BOOTSTRAP.md) for the
-Linux/macOS service and security contract.
-
-#### 💻 Project & open an interactive shell
-```bash
-git shadow up aws-micro
-```
-
-#### 📦 Push shadows silently
-```bash
-git shadow push aws-micro
-```
-
-#### 🛰️ Reuse a resident VPS executor
-```bash
-git shadow service aws-micro load
-git shadow run aws-micro cloudcli --provider codex --service --watch
-git shadow service aws-micro status
-git shadow service aws-micro unload
-```
-
-`service-agent` 负责 VPS 端任务执行、事件重放和租约自毁；本地 `--watch` 仍是发现本地
-`.gitshadow` 变化并触发双向 CAS 的控制端。服务端不会把本地磁盘变化猜成同步请求。
-常驻服务连接中断时，控制端会用同一 `job_id` 重连并按事件序号去重，不会重复执行同一任务。
-
-新 VPS 只配置 SSH 时，可先运行仓库内的一键验收脚本。它安装 standalone edge、加载并检查
-项目级 service，默认再执行一次分层 `push`，退出时自动卸载本次 service；使用 `--no-push`
-可只验收安装与启动，使用 `--keep-service` 可保留 service：
-
-```bash
-scripts/acceptance_vps.sh user@vps --dest /home/user/wkspace/project
-```
-
-边缘执行器默认将每个 Job 的事件日志限制为 4 MiB，并只保留最近 100 个终态
-Job 的运行目录；运行中任务不会被清理。可在 VPS 环境中通过
-`GIT_SHADOW_EVENT_LOG_MAX_BYTES` 和 `GIT_SHADOW_MAX_COMPLETED_RUNS` 调整默认值，
-或在 `edge-agent` / `service-agent` 启动参数中使用同名的 `--max-*` 选项覆盖。
-当日志达到上限时只保留尾部事件，resume 会标记 `truncated`，不会伪造缺失的历史事件。
-
-#### 🔁 Personal continuous development loop (recommended)
-
-For the author's own local-to-VPS workflow, keep this command running while the remote
-CloudCLI Agent works:
-
-```bash
-git shadow run aws-micro cloudcli --provider codex --service --watch
-```
-
-The watcher automatically pushes local `.gitshadow` changes and pulls remote Shadow
-changes through CAS. It also periodically fetches the Git remote and applies only a
-fast-forward update when the local Git worktree is clean. Local uncommitted changes
-pause Git auto-pull and are never overwritten. Use `--no-git-pull` to disable this
-lane or `--git-pull-interval 30` to change its interval.
-
-The remote Agent should commit and push tracked code to GitHub; the local watcher
-then collects those commits. This personal workflow is the current acceptance target;
-standalone desktop distribution, IDE integration, and Managed VPS are future work.
-
-#### 🔄 Pull AI's committed changes back to local
-```bash
-git shadow pull aws-micro
-```
-
----
-
-## ⚙️ Configuration (`.shadowignore`)
-
-By default, `git-shadow` automatically filters out heavy dependency and cache directories (`node_modules/`, `.venv/`, `dist/`, `build/`, `.next/`, `__pycache__/`, etc.).
-
-If you have additional large local files that should not be sent, create a `.shadowignore` in your repository root:
-
-```gitignore
+~~~gitignore
 # .shadowignore
 large_dataset/
 *.mp4
 test_dump.sql
-```
+~~~
+
+可以理解为：
+
+~~~text
+ShadowCandidates
+    ∩ .gitshadow allowlist
+    - .shadowignore denylist
+    = Actual Shadow Projection
+~~~
+
+## 安装
+
+要求：
+
+- Python 3.8+
+- 本地可使用 Git
+- 至少存在一个可 SSH 的远端主机
+
+开发安装：
+
+~~~bash
+git clone https://github.com/epodak/git-shadow.git
+cd git-shadow
+pip install -e .
+~~~
+
+也可以不安装 Python 包，只生成轻量 wrapper：
+
+~~~bash
+python -m git_shadow.cli install ~/.local/bin
+~~~
+
+之后两种调用方式等价：
+
+~~~bash
+git shadow <command>
+git-shadow <command>
+~~~
+
+查看帮助推荐：
+
+~~~bash
+git shadow -h
+# 或
+git-shadow --help
+~~~
+
+注意：git shadow --help 可能被 Git 自身的 manpage 机制截获。
+
+## 快速开始
+
+### 1. 查看当前工作区会投影什么
+
+~~~bash
+git shadow diff
+~~~
+
+### 2. 投影并启动远端 Agent
+
+~~~bash
+git shadow run aws-micro opencode
+~~~
+
+CloudCLI：
+
+~~~bash
+git shadow run aws-micro cloudcli --provider codex
+~~~
+
+执行过程会把当前 Git 分支路由到自己的远端目录，例如：
+
+~~~text
+AI@foo/bar
+→ ~/wkspace/AI/foo/bar
+~~~
+
+### 3. 只同步，不进入 Agent
+
+~~~bash
+git shadow push aws-micro
+~~~
+
+### 4. 投影并进入远端终端
+
+~~~bash
+git shadow up aws-micro
+~~~
+
+### 5. 拉取 AI 已提交的 Git 修改
+
+~~~bash
+git shadow pull aws-micro
+~~~
+
+连同 Shadow 变化一起检查：
+
+~~~bash
+git shadow pull aws-micro --with-shadows
+~~~
+
+### 6. 显式投影未提交 tracked 修改
+
+默认不会同步本地未提交代码。需要时：
+
+~~~bash
+git shadow run aws-micro opencode --wip
+~~~
+
+## 远端能力自举
+
+如果远端已经能 SSH，但没有 CloudCLI，不需要再手工 SSH 登录安装。
+
+查看状态：
+
+~~~bash
+git shadow remote status aws-micro cloudcli
+~~~
+
+查看准备计划：
+
+~~~bash
+git shadow remote plan aws-micro cloudcli
+~~~
+
+直接通过现有 SSH 安装、配置并启动：
+
+~~~bash
+git shadow remote ensure aws-micro cloudcli
+~~~
+
+显式运行 CloudCLI 时也会自动处理可修复状态：
+
+~~~bash
+git shadow run aws-micro cloudcli
+~~~
+
+如果希望只探测、不要自动安装：
+
+~~~bash
+git shadow run aws-micro cloudcli --no-bootstrap
+~~~
+
+当前 bootstrap 原则：
+
+- 支持远端 Linux / macOS；
+- 不要求 sudo；
+- 不修改项目目录；
+- 不修改 .bashrc / .zshrc；
+- 运行时资产放在 ~/.local/share/git-shadow；
+- Linux 优先 systemd --user；
+- macOS 优先 launchd；
+- 不可用时回退到 nohup；
+- CloudCLI 失败不会阻断 Git / Shadow 同步。
+
+详见：[Remote Capability Bootstrap](docs/REMOTE_CAPABILITY_BOOTSTRAP.md)。
+
+## Edge Executor 与常驻 Service
+
+安装/更新远端 standalone edge executor：
+
+~~~bash
+git shadow edge install aws-micro
+~~~
+
+查看任务：
+
+~~~bash
+git shadow edge status aws-micro <job-id>
+git shadow edge resume aws-micro <job-id>
+~~~
+
+使用项目级常驻 service：
+
+~~~bash
+git shadow service aws-micro load
+git shadow run aws-micro cloudcli --provider codex --service --watch
+git shadow service aws-micro status
+git shadow service aws-micro unload
+~~~
+
+VPS 不需要安装完整 git-shadow Python 包。控制端会上传 standalone executor。
+
+## 持续开发模式
+
+推荐的个人开发闭环：
+
+~~~bash
+git shadow run aws-micro cloudcli --provider codex --service --watch
+~~~
+
+--watch 的职责：
+
+- 本地 Shadow 改动 → CAS push；
+- 远端 Shadow 改动 → CAS pull；
+- 本地 Git 工作树干净时 → 定期 fetch + fast-forward；
+- 本地有未提交修改时 → 自动暂停 Git 拉取，绝不覆盖本地工作。
+
+远端 Agent 应通过 Git commit + push 交付 tracked 代码，本地再正常收取提交。
+
+## Git 远端与鉴权
+
+如果仓库存在 origin，git-shadow 直接沿用它：
+
+~~~text
+https://github.com/org/repo.git
+git@github.com:org/repo.git
+~~~
+
+私有仓库可以先同步 Git/SSH 鉴权：
+
+~~~bash
+git shadow auth sync aws-micro
+~~~
+
+没有 origin 的 Git 项目会进入显式 P2P archive lane，不会猜测某个 GitHub 仓库。
+
+## 安全与一致性原则
+
+git-shadow 当前遵循这些不变量：
+
+1. .gitshadow 是 Shadow 正向授权契约。
+2. Git 分支之间使用独立远端 workspace。
+3. Shadow acknowledgement 同时按本地项目、远端 host、远端 workspace 隔离。
+4. 未提交 tracked 文件默认不离开本机。
+5. Shadow CAS 冲突不能静默覆盖另一端修改。
+6. Runtime/依赖不通过 Shadow 搬运。
+7. CloudCLI 不可用不等于整个远端 host 不可用。
+8. SSH 不可用时，不尝试把“连接失败”误判为“应用缺失”并自动安装。
+
+## 常用命令
+
+~~~text
+git shadow diff
+git shadow probe <host>
+git shadow push <host>
+git shadow pull <host>
+git shadow up <host>
+git shadow run <host> [agent]
+
+git shadow auth sync <host>
+
+git shadow remote status <host> cloudcli
+git shadow remote plan <host> cloudcli
+git shadow remote ensure <host> cloudcli
+
+git shadow edge install <host>
+git shadow edge status <host> <job-id>
+git shadow edge resume <host> <job-id>
+
+git shadow service <host> load
+git shadow service <host> status
+git shadow service <host> unload
+~~~
+
+## 更多设计文档
+
+- [Remote Capability Bootstrap](docs/REMOTE_CAPABILITY_BOOTSTRAP.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Layered Sync Ownership Law](docs/decisions/2026-09-15_LAYERED_SYNC_OWNERSHIP_LAW.md)
+- [Remote Edge Executor JSONL Law](docs/decisions/2026-09-15_REMOTE_EDGE_EXECUTOR_JSONL_LAW.md)
+- [Local Silence and Zero Git Touch Law](docs/decisions/2026-09-25_LOCAL_SILENCE_AND_ZERO_GIT_TOUCH_LAW.md)
 
 ---
 
-## 🇨🇳 中文说明 (Chinese README)
+# English
 
-`git-shadow` 专为**在远端云主机（如 AWS / 独立 VPS）调用 AI 编程智能体（OpenCode, Claude Code 等）辅助本地开发**而设计。
+## Overview
 
-### 核心哲学：分层协同
-- **公有事实走 Git**：远端主机利用高速海外骨干网秒级 `git clone`，零本地上行带宽消耗；
-- **私有状态走影子**：自动捕获本地受 `.gitignore` 保护的真实配置（`.env*`、私钥、本地调试文件），通过带基线哈希的 CAS 原子投影到远端；
-- **重型依赖走原生**：`node_modules` 与虚拟环境在远端 Linux 原生就地安装，彻底告别 Windows 与 Linux 跨平台二进制兼容性噩梦；
-- **影子状态 CAS 同步**：`.gitshadow` 文件携带基线哈希并原子写入，远端同时修改时保留冲突副本而不静默覆盖；未提交代码默认留在本地，确需临时投影时显式追加 `--wip`。
-- **多目标基线隔离**：本地 Shadow acknowledgement 按本地项目、远端主机和远端工作区分别保存，切换 VPS 或目标目录不会复用错误的 CAS 基线。
+git-shadow projects a local development workspace onto a remote Linux/macOS host for AI coding agents such as OpenCode, Claude Code, Codex, Aider, and CloudCLI.
 
-### 🇨🇳 为什么这种架构格外适合国内开发者？（痛点直击）
+It does not treat the workspace as one monolithic sync tree. Ownership is split into independent lanes:
 
-在日常使用 AI 编程智能体（Claude Code / OpenCode / Codex）时，国内开发者普遍面临几个非常现实的折磨：
+| Lane | Data | Transport |
+| --- | --- | --- |
+| Git | committed code and history | clone / fetch / pull / push |
+| Shadow | explicitly allowed private local state | .gitshadow + CAS + SSH |
+| Native Runtime | dependencies and build caches | installed on the remote host |
+| WIP | uncommitted tracked changes | opt-in --wip patch |
 
-1. **彻底告别“代理抽风与网络中断地狱”**：
-   - 本地直连海外 AI API 常年遭遇 TUN 模式冲突、梯子断流、GitHub SSL Reset 或限速；
-   - 远端直接部署在海外云主机（AWS / 优质 VPS），直连 Anthropic / OpenAI 骨干机房（<5ms 延迟，零掉线）；几十兆的 `pnpm` / `pip` 依赖包几秒内下载完毕，彻底终结网络焦虑。
-2. **终结“Windows 办公桌面 vs Linux 生产环境”的割裂与风扇狂转**：
-   - 国内大量工程师主力机是 Windows 笔记本或台式机。本地跑 WSL2、Docker 或重型编译时，经常遭遇内存被吃满、风扇起飞、以及 `node-gyp`、C 扩展、换行符（CRLF/LF）等跨平台玄学报错；
-   - 采用本架构后，本地电脑只做轻量编辑与验收，重型构建与运行全部卸载给远端 Linux 原生宿主。
-3. **电脑不再被“绑架”（合盖下班，长程无人值守推进）**：
-   - 传统本地跑 Agent 时，你不敢关机、不敢断网，电脑沦为 AI 的人质；
-   - 现在本地只是**“指挥所”**，远端是**“24 小时不打烊的施工队”**：下发任务后直接合上笔记本下班，远端常驻守护（`service-agent`）持续自主测试与编码，断网完全不影响远端进度。
-4. **随时随地手机 / iPad 浏览器“探班监工”**：
-   - 结合 Web Remote（如 CloudCLI / Zero Trust 穿透），在通勤地铁上或沙发上，掏出手机打开浏览器就能实时看到当前 Agent 的思考轨迹、代码改动与终端输出，甚至补充指令，无需守在特定开发机前。
-5. **人机“双胞胎沙盒”（脏工作区物理隔离与防暴走安全气囊）**：
-   - 本地工作区干净整洁，想怎么测就怎么测，不会被 AI 施工中途的未提交代码弄乱；
-   - 远端 VPS 是天然的安全隔离带，哪怕自主 Agent 执行了高危误删命令，也伤及不到本地宿主机的任何个人文件和盘符。AI 交付完成并 commit 后，本地一个 `gpl`（rebase）优雅收割成果。
+## Branch-scoped workspaces
 
-### 注册与执行原理：Git 原生子命令发现 (Git Subcommand Discovery)
-Git 天生支持原生子命令扩展：当在终端执行 `git <subcommand>` 时，Git 会自动从系统环境变量 `PATH` 中检索名为 `git-<subcommand>` 的可执行体（在 Windows 下优先匹配 `git-shadow.cmd`、`git-shadow.exe`、`git-shadow` 等）。
-- 因此，无论是 `git shadow <command>` 还是 `git-shadow <command>` 均可完全等价无缝调用；
-- **免安装热重载方案**：将简单包装脚本（设置 `PYTHONPATH` 指向工程目录并调用 `python -m git_shadow.cli`）放入任意系统 `PATH` 路径（如 `D:/Tool/DIY` 或 `~/.local/bin`），即可零污染系统 Python 环境，且修改源码即刻生效；
-- **查看帮助避坑**：因 Git 官方机制会拦截 `--help` 转去寻找内置 HTML 手册并报错，查看帮助请统一使用 **`git shadow -h`** 或 **`git-shadow --help`**。
+A Git workspace is identified by repository **and branch**.
+
+~~~text
+repository: AI
+branch:     foo/bar
+
+remote:
+~/wkspace/AI/foo/bar
+~~~
+
+A different branch receives a different remote workspace:
+
+~~~text
+AI@main    → ~/wkspace/AI/main
+AI@foo/bar → ~/wkspace/AI/foo/bar
+~~~
+
+New remote Git workspaces use single-branch clone/fetch semantics, so switching a local checkout does not mutate another branch's remote workspace.
+
+Plain non-Git folders keep the simpler route:
+
+~~~text
+~/wkspace/<project>
+~~~
+
+## Architecture
+
+~~~text
+Local
+├─ Git tracked files ─────────────→ Git Remote ─────→ remote Git workspace
+├─ .gitshadow private files ─────→ CAS over SSH ───→ Shadow overlay
+├─ uncommitted tracked changes ──→ local by default; --wip is explicit
+└─ dependencies/build cache ─────→ not copied
+
+Remote
+├─ branch-scoped Git baseline
+├─ Shadow private state
+├─ native dependencies
+└─ AI Agent / CloudCLI
+~~~
+
+## Installation
+
+~~~bash
+git clone https://github.com/epodak/git-shadow.git
+cd git-shadow
+pip install -e .
+~~~
+
+Or install only the wrapper:
+
+~~~bash
+python -m git_shadow.cli install ~/.local/bin
+~~~
+
+Then use either:
+
+~~~bash
+git shadow -h
+git-shadow --help
+~~~
+
+## Quick start
+
+~~~bash
+git shadow diff
+git shadow run aws-micro opencode
+git shadow run aws-micro cloudcli --provider codex
+git shadow push aws-micro
+git shadow up aws-micro
+git shadow pull aws-micro
+~~~
+
+For explicit WIP projection:
+
+~~~bash
+git shadow run aws-micro opencode --wip
+~~~
+
+## Shadow contract
+
+.gitshadow is the positive allowlist. Files are not sent merely because they appear in .gitignore.
+
+~~~gitignore
+.env*
+*.secret
+*.key
+*.pem
+config.local.*
+~~~
+
+.shadowignore can apply additional exclusions.
+
+## Remote CloudCLI bootstrap
+
+No second manual SSH session is required when the host is already reachable:
+
+~~~bash
+git shadow remote status aws-micro cloudcli
+git shadow remote plan aws-micro cloudcli
+git shadow remote ensure aws-micro cloudcli
+~~~
+
+An explicit CloudCLI run automatically attempts repairable bootstrap unless disabled with --no-bootstrap.
+
+## Continuous workflow
+
+~~~bash
+git shadow run aws-micro cloudcli --provider codex --service --watch
+~~~
+
+The watcher synchronizes Shadow state bidirectionally through CAS and only fast-forwards Git when the local worktree is clean.
+
+## Design invariants
+
+- Git branches map to independent remote workspaces.
+- .gitshadow is the Shadow allowlist.
+- tracked WIP remains local unless explicitly requested.
+- Shadow conflicts never silently overwrite the opposite side.
+- heavy runtime dependencies stay native to the remote host.
+- CloudCLI failure degrades to sync-only instead of disabling the host.
+- bootstrap never treats an SSH connection failure as an application installation problem.
+
+See [docs](docs/) for protocol, security, bootstrap, and roadmap details.
 
 ---
 
-## 📄 License
+## License
 
 [MIT License](LICENSE) © 2026 Epodak
