@@ -4,7 +4,7 @@ import tempfile
 import time
 import unittest
 
-from git_shadow.paths import test_temp_root
+from git_shadow.paths import cleanup_test_tree, test_temp_root
 
 from git_shadow.watcher import LocalChangeWatcher
 
@@ -14,7 +14,7 @@ class TestLocalChangeWatcher(unittest.TestCase):
         self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_watcher_", dir=str(test_temp_root())))
 
     def tearDown(self):
-        shutil.rmtree(self.root, ignore_errors=True)
+        cleanup_test_tree(self.root)
 
     def test_watcher_reports_a_new_file_or_falls_back_cleanly(self):
         with LocalChangeWatcher(str(self.root)) as watcher:
