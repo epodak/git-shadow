@@ -3,7 +3,7 @@ import shutil
 import tempfile
 import unittest
 
-from git_shadow.paths import test_temp_root
+from git_shadow.paths import cleanup_test_tree, test_temp_root
 
 from git_shadow.edge_agent import EdgeExecutor
 from git_shadow.scanner import RepoState
@@ -15,7 +15,7 @@ class TestPlainWorkspace(unittest.TestCase):
         (self.root / ".env").write_text("plain-secret\n", encoding="utf-8")
 
     def tearDown(self):
-        shutil.rmtree(self.root, ignore_errors=True)
+        cleanup_test_tree(self.root)
 
     def test_plain_folder_has_project_identity_and_shadow_scan(self):
         repo = RepoState(str(self.root))
