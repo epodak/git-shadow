@@ -258,7 +258,7 @@ class ShadowEngine:
         provider: Optional[str] = None,
         shadow_files: Optional[List[str]] = None,
         sync_git_pull: bool = False,
-        public_url: str = "https://cli.daduiot.com",
+        public_url: Optional[str] = None,
         cloudcli_base_url: Optional[str] = None,
         cloudcli_token: Optional[str] = None,
         include_wip: bool = False,
@@ -316,10 +316,11 @@ class ShadowEngine:
                 "action": "cloudcli.session",
                 "project_path": target_dir,
                 "provider": resolved_provider,
-                "public_url": public_url.rstrip("/"),
                 "initial_message": "",
                 "allow_failure": True,
             }
+            if public_url:
+                session_step["public_url"] = public_url.rstrip("/")
             if cloudcli_base_url:
                 session_step["base_url"] = cloudcli_base_url.rstrip("/")
             if cloudcli_token:
@@ -433,24 +434,29 @@ class ShadowEngine:
             "steps": steps,
         }
 
-    def open_cloudcli_optimistic(self, domain: str = "cli.daduiot.com") -> str:
-
-        """乐观先行：0秒立即拉起本地浏览器打开 CloudCLI，绝不让用户在终端黑框中空转干等"""
-        base_url = f"https://{domain}"
-        print(f"\n{Colors.BOLD}{Colors.GREEN}🚀 [乐观先行] 正在本地浏览器秒级打开 CloudCLI Web 远程工作台:{Colors.RESET}")
+    def open_cloudcli_optimistic(self, base_url: Optional[str]) -> Optional[str]:
+        """立即打开已解析的 Web 接入地址；接入层不得在这里写死域名。"""
+        if not base_url:
+            log_warn("未解析到可从本地浏览器访问的 CloudCLI 接入路径。")
+            return None
+        base_url = str(base_url).rstrip("/")
+        print(f"\n{Colors.BOLD}{Colors.GREEN}🚀 [乐观先行] 正在打开 CloudCLI Web 远程工作台:{Colors.RESET}")
         print(f"   👉 {Colors.BOLD}{Colors.CYAN}{base_url}{Colors.RESET}\n", flush=True)
         try:
             webbrowser.open(base_url)
-            log_success("本地浏览器已先一步弹出工作台！页面加载与后台同步时间交叉重叠。")
+            log_success("浏览器已先一步打开工作台；后台继续准备 Session 与工作区。")
         except Exception as e:
-            log_warn(f"无法自动拉起浏览器，请手动点击上方链接访问: {e}")
+            log_warn(f"无法自动拉起浏览器，请手动访问上方地址: {e}")
         return base_url
 
-    def fetch_and_report_session(self, domain: str = "cli.daduiot.com") -> Optional[str]:
-        """后台检索并锁定远端与当前工作区匹配的会话深链"""
-        log_step(4, 4, f"检查远端 CloudCLI 活跃会话深链 ({domain})...")
+    def fetch_and_report_session(self, base_url: Optional[str]) -> Optional[str]:
+        """按精确工作区寻找历史 Session，并拼接到当前选定的接入基地址。"""
+        if not base_url:
+            log_warn("未配置浏览器接入基地址，跳过历史 Session 深链生成。")
+            return None
+        base_url = str(base_url).rstrip("/")
+        log_step(4, 4, f"检查远端 CloudCLI 活跃会话 ({base_url})...")
 
-        # 远端探查与当前工作区匹配的 session_id
         fetch_session_script = f"""
         python3 <<'EOF' 2>/dev/null
 import sqlite3, os, sys
@@ -463,9 +469,6 @@ if not os.path.exists(db_path):
 try:
     con = sqlite3.connect(db_path)
     cur = con.cursor()
-    # Branch-scoped workspace identity requires an exact project path.
-    # A parent project (for example ~/wkspace/AI) must never hijack the
-    # session for ~/wkspace/AI/foo/bar.
     target_dir = "{self.remote_dir}"
     cur.execute(
         "SELECT session_id, custom_name, project_path FROM sessions WHERE isArchived = 0 AND project_path = ? ORDER BY updated_at DESC LIMIT 1",
@@ -495,18 +498,17 @@ EOF
                 session_title = line.replace("TITLE:", "").strip()
 
         if session_id:
-            target_url = f"https://{domain}/session/{session_id}"
+            target_url = f"{base_url}/session/{session_id}"
             title_hint = f" ({session_title[:30]}...)" if session_title else ""
             log_success(f"已锁定当前工作区专属会话: {Colors.CYAN}{session_id}{Colors.RESET}{Colors.DIM}{title_hint}{Colors.RESET}")
             print(f"   🔗 专属会话直通深链: {Colors.BOLD}{Colors.CYAN}{target_url}{Colors.RESET}\n", flush=True)
             return target_url
-        else:
-            log_info(f"未检索到专属历史会话，可直接在主页新建或选用已有会话。")
-            return None
+        log_info("未检索到当前工作区的历史会话。")
+        return None
 
-    def launch_cloudcli_web(self, domain: str = "cli.daduiot.com"):
-        """获取 CloudCLI Session 并自动在本地浏览器中弹出 (兼容旧调用)"""
-        self.fetch_and_report_session(domain=domain)
+    def launch_cloudcli_web(self, base_url: Optional[str] = None):
+        """兼容旧调用；域名/URL 必须由 Access Path 层传入。"""
+        self.fetch_and_report_session(base_url=base_url)
 
 
     def launch_agent_or_shell(self, agent_cmd: Optional[str] = None):
