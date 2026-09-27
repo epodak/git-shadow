@@ -169,6 +169,26 @@ class TestAccessPath(unittest.TestCase):
                 "https://cloud.example.com",
             )
 
+    def test_enrollment_refuses_to_switch_an_existing_different_tailnet(self):
+        manager = AccessPathManager(FakeEngine())
+        before = {
+            "same_tailnet": False,
+            "remote_available": True,
+            "local_tailnet": "my-tailnet.example",
+            "remote_tailnet": "other-tailnet.example",
+        }
+        with patch.object(manager, "probe_tailscale", return_value=before):
+            with patch.dict(
+                os.environ,
+                {"GIT_SHADOW_TAILSCALE_AUTH_KEY": "tskey-auth-test"},
+                clear=True,
+            ):
+                result = manager.ensure_tailscale()
+
+        self.assertFalse(result["success"])
+        self.assertFalse(result["changed"])
+        self.assertEqual(result["error"], "remote-already-on-different-tailnet")
+
     def test_explicit_tailscale_enrollment_requires_auth_key(self):
         manager = AccessPathManager(FakeEngine())
         with patch.object(
