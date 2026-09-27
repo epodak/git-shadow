@@ -154,6 +154,46 @@ ShadowCandidates
     = Actual Shadow Projection
 ~~~
 
+## git-shadow 自身状态目录
+
+git-shadow 现在只使用一个默认根目录：
+
+~~~text
+~/.git-shadow/
+├── bindings.json
+├── shadows/
+├── conflicts/
+├── daemon/
+├── tmp/
+│   └── tests/
+├── bin/
+├── apps/
+├── runtime/
+├── logs/
+├── runs/
+└── services/
+~~~
+
+本地控制端通常只会使用 binding、Shadow 状态、daemon 和测试临时目录；远端 VPS 还会使用 bin、apps、runtime、runs、services 等运行时目录。
+
+以前的 `~/.local/state/git-shadow` 和 `~/.local/share/git-shadow` 只作为升级兼容的迁移来源，新状态不再默认写入那里。
+
+特别是测试：所有 `git_shadow_*_xxxxxxxx` 临时工作区现在都创建在：
+
+~~~text
+~/.git-shadow/tmp/tests/
+~~~
+
+即使 Windows 因文件句柄尚未释放导致某次测试清理失败，也不会再把大量临时文件夹直接留在用户 Home 根目录。
+
+如果确实需要改根目录，可以设置：
+
+~~~bash
+GIT_SHADOW_HOME=/path/to/state
+~~~
+
+详见：[Unified git-shadow Home Law](docs/decisions/2026-09-27_UNIFIED_GIT_SHADOW_HOME_LAW.md)。
+
 ## 安装
 
 要求：
@@ -490,6 +530,7 @@ git shadow service <host> unload
 
 ## 更多设计文档
 
+- [Unified git-shadow Home Law](docs/decisions/2026-09-27_UNIFIED_GIT_SHADOW_HOME_LAW.md)
 - [Remote Capability Bootstrap](docs/REMOTE_CAPABILITY_BOOTSTRAP.md)
 - [Adaptive Web Access Path Law](docs/decisions/2026-09-27_ADAPTIVE_WEB_ACCESS_PATH_LAW.md)
 - [Branch-Scoped Workspace Routing Law](docs/decisions/2026-09-27_BRANCH_SCOPED_WORKSPACE_ROUTING_LAW.md)
@@ -557,6 +598,31 @@ Remote
 ├─ native dependencies
 └─ AI Agent / CloudCLI
 ~~~
+
+## Application state directory
+
+git-shadow uses one default application root:
+
+~~~text
+~/.git-shadow/
+├── bindings.json
+├── shadows/
+├── conflicts/
+├── daemon/
+├── tmp/tests/
+├── bin/
+├── apps/
+├── runtime/
+├── logs/
+├── runs/
+└── services/
+~~~
+
+Legacy `~/.local/state/git-shadow` and `~/.local/share/git-shadow` locations are migration/read-compatibility sources only. New state is written under `~/.git-shadow`.
+
+All test workspaces also live below `~/.git-shadow/tmp/tests/`, so failed Windows cleanup cannot litter the visible home directory with `git_shadow_*_xxxxxxxx` folders.
+
+Override the root with `GIT_SHADOW_HOME` when needed.
 
 ## Installation
 
