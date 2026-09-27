@@ -64,6 +64,9 @@ Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Wind
 - [x] provider、project path、公开深链的契约校验
 - [x] 真实 `aws-us` VPS 部署 CloudCLI 1.37.3，并通过 SSH 转发完成注册、登录、受保护 API 与 `git shadow run` smoke
 - [x] CloudCLI 缺失/停止/Connection refused 时自动 capability bootstrap；失败仍保持 Git/Shadow sync-only 优雅降级
+- [x] CloudCLI Web 接入与应用运行解耦：移除个人域名硬编码，新增 Tailscale Serve / 配置公网 URL 的自适应 Access Path
+- [x] 同 Tailnet direct/peer-relay 优先私网；DERP-only + 公网 URL 时优先公网路径；两者失败只降级 Web
+- [x] `network status` 只读诊断；`network ensure <host> tailscale` 显式 Linux VPS 入网，普通 run/push/pull 不隐式 sudo
 
 ### 1.3 Git 工作区
 
@@ -117,6 +120,7 @@ Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Wind
 - [x] watcher 防抖、合并提交和失败退避
 - [ ] 安静模式与可读进度模式
 - [ ] 端到端首次启动耗时和重复启动耗时指标
+- [ ] 对 direct / peer-relay / DERP / Cloudflare 四种 Web 路径做延迟与吞吐实测，避免静态假设谁永远更快
 
 ## 6. P1：安全与运维
 
