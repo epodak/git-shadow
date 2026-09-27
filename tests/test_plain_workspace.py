@@ -3,13 +3,15 @@ import shutil
 import tempfile
 import unittest
 
+from git_shadow.paths import test_temp_root
+
 from git_shadow.edge_agent import EdgeExecutor
 from git_shadow.scanner import RepoState
 
 
 class TestPlainWorkspace(unittest.TestCase):
     def setUp(self):
-        self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_plain_", dir=str(pathlib.Path.home())))
+        self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_plain_", dir=str(test_temp_root())))
         (self.root / ".env").write_text("plain-secret\n", encoding="utf-8")
 
     def tearDown(self):
