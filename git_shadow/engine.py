@@ -14,7 +14,7 @@ from typing import List, Optional, Dict, Any
 
 from .scanner import RepoState
 from .shadow_sync import ShadowManifestStore
-from .workspace_identity import workspace_relative_path
+from .workspace_identity import branch_route, workspace_relative_path
 from .utils import (
     log_info,
     log_success,
@@ -40,6 +40,9 @@ class ShadowEngine:
         # 路径净化：防止 Windows Git Bash 将绝对路径错误转义为 D:/Tool/...
         cleaned_dir = self._clean_path(remote_dir) if remote_dir else None
         self.remote_dir = cleaned_dir  # 稍后在对齐时动态解析推荐路径
+        # Explicit -d/--dest is user-owned routing.  Automatic routing may
+        # safely migrate the legacy repo-root layout into branch subfolders.
+        self._auto_branch_routing = remote_dir is None
 
     def _clean_path(self, path: Optional[str]) -> Optional[str]:
         """清洗由于 Windows MSYS 路径转换引入的异常本地盘符前缀"""
@@ -117,6 +120,38 @@ class ShadowEngine:
         resolved = res.stdout.strip() if res.returncode == 0 else f"~/wkspace/{suffix}"
         self.remote_dir = resolved
         return self.remote_dir
+
+    def _workspace_route_step(self, target_dir: str) -> Optional[Dict[str, Any]]:
+        """Return a typed migration step for the automatic branch layout.
+
+        Old git-shadow versions used ~/wkspace/<repo> as the Git checkout.
+        New routing needs ~/wkspace/<repo>/<branch>.  The edge executor owns
+        the safe migration so a new branch is never created *inside* a legacy
+        Git worktree.
+        """
+        if not getattr(self, "_auto_branch_routing", False):
+            return None
+        if not bool(getattr(self.repo, "is_git", False)):
+            return None
+        branch = str(getattr(self.repo, "branch", "") or "")
+        if not branch:
+            return None
+
+        route = branch_route(branch)
+        normalized = str(target_dir).replace("\\", "/").rstrip("/")
+        suffix = "/" + route
+        if not normalized.endswith(suffix):
+            return None
+        repo_root = normalized[: -len(suffix)]
+        if not repo_root:
+            return None
+        return {
+            "id": "workspace.route",
+            "action": "workspace.route",
+            "repo_root": repo_root,
+            "target": normalized,
+            "branch": branch,
+        }
 
     def prepare_remote_repo(self, sync_git_pull: bool = False, probe_ws_dir: Optional[str] = None) -> bool:
         """在远端克隆或对齐 Git 仓库"""
@@ -239,6 +274,10 @@ class ShadowEngine:
         shadow_files = shadow_files if shadow_files is not None else self.repo.scan_shadow_files()
         steps: List[Dict[str, Any]] = []
 
+        route_step = self._workspace_route_step(target_dir)
+        if route_step:
+            steps.append(route_step)
+
         # Create the project directory first so CloudCLI can create a Session
         # against it before the potentially slow Git clone starts.
         steps.append(
@@ -335,10 +374,12 @@ class ShadowEngine:
         manifest = shadow_store or ShadowManifestStore(self.repo.root_dir)
         patterns_getter = getattr(self.repo, "shadow_patterns", None)
         patterns = patterns_getter() if callable(patterns_getter) else []
-        return {
-            "protocol": 1,
-            "project_path": target_dir,
-            "steps": [
+        steps: List[Dict[str, Any]] = []
+        route_step = self._workspace_route_step(target_dir)
+        if route_step:
+            steps.append(route_step)
+        steps.extend(
+            [
                 {
                     "id": "workspace.create",
                     "action": "workspace.create",
@@ -351,16 +392,23 @@ class ShadowEngine:
                     "entries": manifest.build_pull_entries(files),
                     "patterns": patterns,
                 },
-            ],
+            ]
+        )
+        return {
+            "protocol": 1,
+            "project_path": target_dir,
+            "steps": steps,
         }
 
     def build_remote_git_pull_plan(self) -> Dict[str, Any]:
         """构建通知远端边缘执行器拉取 GitHub 最新 Git 提交的任务 Plan"""
         target_dir = self.resolve_remote_dir()
-        return {
-            "protocol": 1,
-            "project_path": target_dir,
-            "steps": [
+        steps: List[Dict[str, Any]] = []
+        route_step = self._workspace_route_step(target_dir)
+        if route_step:
+            steps.append(route_step)
+        steps.extend(
+            [
                 {
                     "id": "workspace.create",
                     "action": "workspace.create",
@@ -377,7 +425,12 @@ class ShadowEngine:
                     "git_enabled": True,
                     "retries": 1,
                 },
-            ],
+            ]
+        )
+        return {
+            "protocol": 1,
+            "project_path": target_dir,
+            "steps": steps,
         }
 
     def open_cloudcli_optimistic(self, domain: str = "cli.daduiot.com") -> str:
