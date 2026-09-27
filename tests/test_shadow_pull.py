@@ -6,7 +6,7 @@ import shutil
 import tempfile
 import unittest
 
-from git_shadow.paths import test_temp_root
+from git_shadow.paths import cleanup_test_tree, test_temp_root
 from types import SimpleNamespace
 
 from git_shadow.edge_agent import EdgeError, EdgeExecutor, EventJournal
@@ -22,7 +22,7 @@ class TestShadowPull(unittest.TestCase):
         self.local.mkdir()
 
     def tearDown(self):
-        shutil.rmtree(self.root, ignore_errors=True)
+        cleanup_test_tree(self.root)
 
     @staticmethod
     def digest(payload: bytes) -> str:
