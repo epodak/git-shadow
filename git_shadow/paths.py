@@ -4,9 +4,9 @@ All git-shadow-owned local state now lives under one visible, user-owned root:
 
     ~/.git-shadow/
 
-The root can be overridden with GIT_SHADOW_HOME.  Legacy local state under
-~/.local/state/git-shadow is migrated conservatively: existing new-path files
-are never overwritten.
+The root can be overridden with GIT_SHADOW_HOME. Legacy local state/runtime
+under ~/.local/state/git-shadow and ~/.local/share/git-shadow is migrated
+conservatively: existing new-path files are never overwritten.
 """
 
 from __future__ import annotations
@@ -109,15 +109,18 @@ def cleanup_test_tree(path: pathlib.Path, attempts: int = 6) -> bool:
         except OSError:
             pass
 
-    for attempt in range(max(1, int(attempts))):
+    total_attempts = max(1, int(attempts))
+    for attempt in range(total_attempts):
         try:
             shutil.rmtree(target, onerror=_onerror)
-            return True
         except FileNotFoundError:
             return True
         except OSError:
-            if attempt >= attempts - 1:
-                break
+            pass
+
+        if not target.exists():
+            return True
+        if attempt < total_attempts - 1:
             time.sleep(0.05 * (attempt + 1))
     return not target.exists()
 
