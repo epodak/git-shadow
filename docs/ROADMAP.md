@@ -9,7 +9,7 @@
 - [x] GitHub 公有仓库、`main` 分支和基础 CLI
 - [x] 干净 SSH + JSONL 边缘任务协议
 - [x] VPS 单文件边缘执行器、事件日志、Lease 取消、状态和重放
-- [x] `workspace.create → cloudcli.session → workspace.prepare → shadow.sync`
+- [x] `workspace.route（必要时迁移旧布局）→ workspace.create → cloudcli.session → workspace.prepare → shadow.sync`
 - [x] Git 代码层、Shadow CAS 层、Native Runtime 层分离
 - [x] 本地 `.gitshadow` 双向 watcher（push + pull）
 - [x] WIP 补丁改为显式 `--wip`
@@ -69,6 +69,8 @@ Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Wind
 
 - [x] 命名分支按 `~/wkspace/<repo>/<branch...>` 路由；binding、CloudCLI project path 与 Shadow CAS scope 使用同一 workspace identity
 - [x] 分支工作区采用 `--single-branch` / 精确 fetch refspec，避免多个分支共享同一远端 checkout
+- [x] 旧版 `~/wkspace/<repo>/.git` 自动无损迁移到其实际分支目录，保留 dirty/untracked 状态并支持回滚
+- [x] 本地 watcher 检测 branch drift，切换分支后立即停止，禁止 Shadow 串写旧分支工作区
 - [x] 公有仓库 HTTPS/SSH URL 的明确策略
 - [x] 空目录、CloudCLI 预先写入文件、已有 Git 工作区核心路径测试
 - [x] Git 可选的普通文件夹可创建 CloudCLI Session、远端空工作区和 Shadow lane
