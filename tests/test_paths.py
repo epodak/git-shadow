@@ -61,6 +61,19 @@ class TestGitShadowPaths(unittest.TestCase):
             self.assertGreaterEqual(calls["count"], 3)
             self.assertFalse(target.exists())
 
+    def test_cleanup_test_tree_fails_loudly_when_directory_survives(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "stuck"
+            target.mkdir()
+            (target / "x.txt").write_text("x", encoding="utf-8")
+
+            with patch.object(paths.shutil, "rmtree", return_value=None):
+                with patch.object(paths.time, "sleep", return_value=None):
+                    with self.assertRaises(OSError):
+                        paths.cleanup_test_tree(target, attempts=3)
+
+            self.assertTrue(target.exists())
+
     def test_legacy_local_state_moves_only_when_destination_is_absent(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = pathlib.Path(tmp)
