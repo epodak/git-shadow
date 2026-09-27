@@ -55,6 +55,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 - **Web 接入路径法则**：👉 [Adaptive Web Access Path ADR](../../../docs/decisions/2026-09-27_ADAPTIVE_WEB_ACCESS_PATH_LAW.md)
   *覆盖：10 分钟 Lease 超时内存回收、Windows/Linux 监听机制差异、双端 Edge 对称演进路线。*
 
+
 ---
 
 ## 🛡️ 核心法则与防坑红线 (Critical Rules)
