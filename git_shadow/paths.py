@@ -14,6 +14,8 @@ from __future__ import annotations
 import os
 import pathlib
 import shutil
+import stat
+import time
 from typing import Optional
 
 
@@ -88,6 +90,36 @@ def local_state_root() -> pathlib.Path:
         path.mkdir(parents=True, exist_ok=True)
         return path
     return migrate_legacy_local_state()
+
+
+def cleanup_test_tree(path: pathlib.Path, attempts: int = 6) -> bool:
+    """Best-effort Windows-friendly cleanup for test workspaces.
+
+    rmtree(ignore_errors=True) used to silently leak directories into Home.
+    This helper clears read-only bits and retries transient sharing violations.
+    """
+    target = pathlib.Path(path)
+    if not target.exists():
+        return True
+
+    def _onerror(func, failed_path, _exc_info):
+        try:
+            os.chmod(failed_path, stat.S_IWRITE | stat.S_IREAD)
+            func(failed_path)
+        except OSError:
+            pass
+
+    for attempt in range(max(1, int(attempts))):
+        try:
+            shutil.rmtree(target, onerror=_onerror)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            if attempt >= attempts - 1:
+                break
+            time.sleep(0.05 * (attempt + 1))
+    return not target.exists()
 
 
 def test_temp_root() -> pathlib.Path:
