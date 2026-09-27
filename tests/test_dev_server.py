@@ -26,7 +26,7 @@ class TestDevServer(unittest.TestCase):
             launch_mode="cloudcli",
             auto_open_browser=False,
         )
-        server.web_url = "https://cli.daduiot.com/session/test-session-id"
+        server.web_url = "https://cloudcli.example.invalid/session/test-session-id"
 
         captured = io.StringIO()
         with patch("sys.stdout", captured):
@@ -37,7 +37,7 @@ class TestDevServer(unittest.TestCase):
         self.assertIn("ready in 150 ms", out)
         self.assertIn(server.repo.root_dir, out)
         self.assertIn("aws:~/wkspace/test", out)
-        self.assertIn("https://cli.daduiot.com/session/test-session-id", out)
+        self.assertIn("https://cloudcli.example.invalid/session/test-session-id", out)
         self.assertIn("[o]", out)
         self.assertIn("[r]", out)
 
@@ -50,7 +50,7 @@ class TestDevServer(unittest.TestCase):
         # Mock shadow store to avoid filesystem ops
         server.shadow_store = MagicMock()
 
-        test_url = "https://cli.daduiot.com/session/abc-123"
+        test_url = "https://cloudcli.example.invalid/session/abc-123"
         event = {"event": "session.ready", "url": test_url}
 
         captured = io.StringIO()
@@ -68,7 +68,7 @@ class TestDevServer(unittest.TestCase):
             auto_open_browser=False,
         )
         server.shadow_store = MagicMock()
-        server.web_url = "https://cli.daduiot.com/session/stale"
+        server.web_url = "https://cloudcli.example.invalid/session/stale"
 
         event = {
             "event": "step.skipped",

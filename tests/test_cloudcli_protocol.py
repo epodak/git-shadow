@@ -61,7 +61,7 @@ class TestCloudCLIProtocol(unittest.TestCase):
                             "project_path": str(target),
                             "provider": "codex",
                             "base_url": "http://127.0.0.1:%s" % self.server.server_port,
-                            "public_url": "https://cli.daduiot.com",
+                            "public_url": "https://cloudcli.example.invalid",
                         },
                         {
                             "id": "workspace-prepare",
@@ -114,7 +114,7 @@ class TestCloudCLIProtocol(unittest.TestCase):
                             "project_path": str(target),
                             "provider": "codex",
                             "base_url": "http://127.0.0.1:%s" % self.server.server_port,
-                            "public_url": "https://cli.daduiot.com",
+                            "public_url": "https://cloudcli.example.invalid",
                         },
                         {
                             "id": "later-failure",
@@ -134,7 +134,7 @@ class TestCloudCLIProtocol(unittest.TestCase):
             failed = next(event for event in events if event.get("event") == "job.failed")
             self.assertEqual(partial["session"]["session_id"], "session-test")
             self.assertTrue(failed["partial"])
-            self.assertEqual(failed["session"]["url"], "https://cli.daduiot.com/session/session-test")
+            self.assertEqual(failed["session"]["url"], "https://cloudcli.example.invalid/session/session-test")
             state = json.loads((self.state_dir / "partial-state" / "runs" / "job-cloudcli-partial" / "state.json").read_text())
             self.assertTrue(state["partial"])
             self.assertEqual(state["session"]["session_id"], "session-test")
@@ -185,7 +185,7 @@ class TestCloudCLIProtocol(unittest.TestCase):
                             "project_path": str(target),
                             "provider": "codex",
                             "base_url": "http://127.0.0.1:%s" % self.server.server_port,
-                            "public_url": "https://cli.daduiot.com",
+                            "public_url": "https://cloudcli.example.invalid",
                             "token": "secret-token",
                         },
                     ],

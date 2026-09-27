@@ -24,6 +24,7 @@ from .watcher import LocalChangeWatcher
 from .install import install_wrappers
 from .probe import RemoteProbe
 from .remote_bootstrap import RemoteBootstrapManager, format_cloudcli_plan
+from .access_path import AccessPathManager, ACCESS_CHOICES
 from .auth import AuthManager
 from .tree import DiffTreeRenderer
 from .git_sync import auto_fast_forward_pull
@@ -63,6 +64,8 @@ def print_help():
   {Colors.GREEN}remote status <host> cloudcli{Colors.RESET} 查看远端 CloudCLI 能力状态
   {Colors.GREEN}remote plan <host> cloudcli{Colors.RESET}   审计将通过 SSH 执行的安装/配置计划
   {Colors.GREEN}remote ensure <host> cloudcli{Colors.RESET} 一键通过现有 SSH 安装、配置并启动 CloudCLI
+  {Colors.GREEN}network status <host>{Colors.RESET}  检测本地与 VPS 是否处于可互访的同一 Tailscale 网络
+  {Colors.GREEN}network ensure <host> tailscale{Colors.RESET} 显式将 Linux VPS 加入 Tailnet（需要 Auth Key）
   {Colors.GREEN}auth sync <host>{Colors.RESET}    一键净化同步本地 SSH/GitHub 鉴权密钥到远端 Linux，打通 Git 权限
   {Colors.GREEN}up <host>{Colors.RESET}           一键投影当前工作区到远端，并进入交互式终端
   {Colors.GREEN}push <host>{Colors.RESET}         通过边缘任务对齐 Git 基线并执行 .gitshadow CAS，不进入终端
@@ -93,6 +96,8 @@ def print_help():
   {Colors.YELLOW}-a, --agent <cmd>{Colors.RESET}   指定在远端运行的 AI 命令
   {Colors.YELLOW}--provider <name>{Colors.RESET}   CloudCLI 供应商 (codex/claude/cursor/opencode)
   {Colors.YELLOW}--cloudcli-url <url>{Colors.RESET} VPS 内部 CloudCLI 地址 (默认 http://127.0.0.1:3001)
+  {Colors.YELLOW}--cloudcli-public-url <url>{Colors.RESET} 显式公网 Web 地址（例如 Cloudflare Tunnel）
+  {Colors.YELLOW}--access <mode>{Colors.RESET}     Web 接入策略: auto / tailscale / public
   {Colors.YELLOW}--no-bootstrap{Colors.RESET}       禁止 run cloudcli 自动安装/启动缺失的远端 CloudCLI
   {Colors.YELLOW}-v, --version{Colors.RESET}       输出当前版本号
   {Colors.YELLOW}-h, --help{Colors.RESET}          查看帮助信息
@@ -105,6 +110,7 @@ def print_help():
   git shadow auth sync aws            # 一键打通远端 VPS 的 GitHub SSH 权限
   git shadow probe aws                # 诊断远端主机系统与环境
   git shadow remote ensure aws cloudcli # 不进入 SSH，直接从本地准备远端 CloudCLI
+  git shadow network status aws         # 检查是否与 VPS 处于同一 Tailnet 及 direct/DERP 状态
   git shadow diff                     # 查看本地有哪些 .env / 密钥会被影子带走 (树状图呈现)
   git shadow run aws cloudcli --provider codex  # 远端批量执行并打开专属会话
 """)
@@ -341,6 +347,47 @@ def main(args: Optional[List[str]] = None):
             log_error("本地 wrapper 安装失败: %s" % exc)
             sys.exit(1)
 
+    # 1.4 网络接入层：Tailscale 私网检测与显式 VPS 入网
+    if subcmd == "network":
+        if len(sub_args) < 2:
+            log_error("用法: git shadow network status <host> | network ensure <host> tailscale")
+            sys.exit(1)
+        network_action, target_host = sub_args[0], sub_args[1]
+        repo = RepoState(".")
+        engine = ShadowEngine(repo=repo, remote_host=target_host)
+        access = AccessPathManager(engine)
+
+        if network_action == "status":
+            result = access.probe_tailscale()
+            result["configured_public_url"] = (
+                os.environ.get("GIT_SHADOW_CLOUDFLARE_URL", "").strip()
+                or os.environ.get("GIT_SHADOW_CLOUDCLI_PUBLIC_URL", "").strip()
+                or None
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            sys.exit(0)
+
+        if network_action == "ensure":
+            capability = sub_args[2].lower() if len(sub_args) > 2 else ""
+            if capability != "tailscale":
+                log_error("用法: git shadow network ensure <host> tailscale")
+                sys.exit(1)
+            log_info("正在通过现有 SSH 将 [%s] 纳入 Tailscale 网络..." % target_host)
+            result = access.ensure_tailscale()
+            if result.get("success"):
+                log_success("Tailscale 已就绪；该 VPS 已可通过 Tailnet 作为私网接入节点。")
+                print(json.dumps(result.get("after", {}), ensure_ascii=False, indent=2))
+                sys.exit(0)
+            log_error("Tailscale 准备失败: %s" % result.get("error", "unknown error"))
+            log_info(
+                "自动入网只在显式 ensure 时执行。请设置 GIT_SHADOW_TAILSCALE_AUTH_KEY；"
+                "Linux VPS 还需要 passwordless sudo。"
+            )
+            sys.exit(1)
+
+        log_error("未知 network 操作: %s (支持: status, ensure)" % network_action)
+        sys.exit(1)
+
     # 1.5 远端能力自举：直接复用现有 SSH 安装/配置远端应用
     if subcmd == "remote":
         if len(sub_args) < 3:
@@ -422,6 +469,7 @@ def main(args: Optional[List[str]] = None):
         log_info(f"正在全景探测远端主机 [{target_host}] 环境与工具...")
         probe = RemoteProbe(target_host)
         probe.scan(engine)
+        probe.data["tailscale"] = AccessPathManager(engine).probe_tailscale()
         probe.display_report()
         cloudcli_capability = probe.data.get("cloudcli_capability", {})
         if (
@@ -625,6 +673,8 @@ def main(args: Optional[List[str]] = None):
             agent=None,
             provider=None,
             cloudcli_url=None,
+            cloudcli_public_url=None,
+            access="auto",
             no_bootstrap=True,
         )
         repo = RepoState(worker_root)
@@ -649,6 +699,8 @@ def main(args: Optional[List[str]] = None):
         parser.add_argument("-a", "--agent", default=None, help="远端 AI Agent 命令")
         parser.add_argument("--provider", default=None, help="CloudCLI AI 供应商: codex/claude/cursor/opencode")
         parser.add_argument("--cloudcli-url", default=None, help="VPS 内部 CloudCLI 地址，默认读取 GIT_SHADOW_CLOUDCLI_BASE_URL")
+        parser.add_argument("--cloudcli-public-url", default=None, help="显式 Web 公网地址，例如 Cloudflare Tunnel")
+        parser.add_argument("--access", choices=ACCESS_CHOICES, default=None, help="CloudCLI Web 接入策略: auto/tailscale/public")
         parser.add_argument("--no-bootstrap", action="store_true", help="禁止 run cloudcli 自动准备远端 CloudCLI")
 
         try:
@@ -706,13 +758,17 @@ def main(args: Optional[List[str]] = None):
         service_client.load()
         return service_client
 
-    def submit_projection(include_cloudcli: bool = False, provider: Optional[str] = None):
+    def submit_projection(
+        include_cloudcli: bool = False,
+        provider: Optional[str] = None,
+        public_url: Optional[str] = None,
+    ):
         edge_client = get_executor_client()
         plan = engine.build_edge_plan(
             provider=provider,
             shadow_files=repo.scan_shadow_files(),
             sync_git_pull=opts.pull,
-            public_url=os.environ.get("GIT_SHADOW_CLOUDCLI_PUBLIC_URL", "https://cli.daduiot.com"),
+            public_url=public_url,
             cloudcli_base_url=opts.cloudcli_url,
             cloudcli_token=os.environ.get("GIT_SHADOW_CLOUDCLI_TOKEN", "").strip() or None,
             include_wip=with_wip,
@@ -957,11 +1013,50 @@ def main(args: Optional[List[str]] = None):
                     watch_shadow()
                 sys.exit(0)
 
-            # Positive probe: retain the low-latency optimistic launch. The
-            # exact session deep-link is still authoritative when ready.
-            engine.open_cloudcli_optimistic()
+            access_manager = AccessPathManager(engine)
+            access_result = access_manager.resolve_cloudcli_access(
+                preference=opts.access,
+                public_url=opts.cloudcli_public_url,
+            )
+            if not access_result.get("available"):
+                reason = access_result.get("reason", "no-browser-access-path")
+                log_warn(
+                    "CloudCLI 服务已就绪，但本地没有可用 Web 接入路径（%s）。"
+                    "已保持 Git/Shadow sync-only。可将两端加入同一 Tailnet，"
+                    "或设置 --cloudcli-public-url / GIT_SHADOW_CLOUDFLARE_URL。"
+                    % reason
+                )
+                try:
+                    submit_projection(include_cloudcli=False)
+                except Exception as exc:
+                    log_error("VPS 分层同步任务未完成: %s" % exc)
+                    sys.exit(1)
+                if opts.watch:
+                    watch_shadow()
+                sys.exit(0)
+
+            browser_base_url = str(access_result.get("url") or "").rstrip("/")
+            source = access_result.get("source", "unknown")
+            ts_info = access_result.get("tailscale", {})
+            suffix = (
+                ", " + str(ts_info.get("connection") or "unknown")
+                if source == "tailscale"
+                else ""
+            )
+            log_info(
+                "CloudCLI Web 接入已选择: %s (%s%s)"
+                % (browser_base_url, source, suffix)
+            )
+
+            # Positive application probe + resolved access path: retain the
+            # optimistic launch while the exact Session deep-link is prepared.
+            engine.open_cloudcli_optimistic(browser_base_url)
             try:
-                result, _ = submit_projection(include_cloudcli=True, provider=provider)
+                result, _ = submit_projection(
+                    include_cloudcli=True,
+                    provider=provider,
+                    public_url=browser_base_url,
+                )
             except Exception as exc:
                 log_error("VPS 边缘任务未完成: %s" % exc)
                 sys.exit(1)

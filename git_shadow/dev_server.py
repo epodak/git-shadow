@@ -23,6 +23,7 @@ from .engine import ShadowEngine
 from .git_sync import auto_fast_forward_pull
 from .probe import RemoteProbe
 from .remote_bootstrap import RemoteBootstrapManager
+from .access_path import AccessPathManager
 from .scanner import RepoState
 from .shadow_sync import ShadowManifestStore
 from .utils import Colors, NO_WINDOW_FLAG, format_size
@@ -78,6 +79,8 @@ class ShadowDevServer:
         self.shadow_store: Optional[ShadowManifestStore] = None
         self.edge_client: Optional[EdgeClient] = None
         self.web_url: Optional[str] = None
+        self.web_base_url: Optional[str] = None
+        self.web_access_source: Optional[str] = None
         self.web_capability = "unknown"  # unknown | available | unavailable | degraded
         self.web_failure_reason: Optional[str] = None
         self.stop_event = threading.Event()
@@ -118,6 +121,22 @@ class ShadowDevServer:
         self._mark_web_unavailable(str(capability.get("reason") or "CloudCLI unavailable"))
         return False
 
+    def _resolve_web_access(self) -> bool:
+        result = AccessPathManager(self.engine).resolve_cloudcli_access()
+        if result.get("available"):
+            self.web_base_url = str(result.get("url") or "").rstrip("/") or None
+            self.web_access_source = str(result.get("source") or "unknown")
+            self.web_failure_reason = None
+            return bool(self.web_base_url)
+        self.web_base_url = None
+        self.web_access_source = None
+        self._mark_web_unavailable(
+            "no-browser-access-path: %s"
+            % str(result.get("reason") or "unavailable"),
+            state="degraded",
+        )
+        return False
+
     def render_dashboard(self, ready_ms: int = 0) -> None:
         """渲染高颜值 Vite / Astro 风格 Dev Server 看板"""
         version = "0.1.0"
@@ -136,7 +155,11 @@ class ShadowDevServer:
         print(f"  {Colors.BOLD}{Colors.GREEN}➜{Colors.RESET}  {Colors.BOLD}Target:{Colors.RESET}    {Colors.CYAN}{self.remote_host}:{target_path}{Colors.RESET}")
         
         if self.web_url:
-            print(f"  {Colors.BOLD}{Colors.GREEN}➜{Colors.RESET}  {Colors.BOLD}Web UI:{Colors.RESET}    {Colors.BOLD}{Colors.CYAN}{self.web_url}{Colors.RESET}")
+            access_tag = f" [{self.web_access_source}]" if self.web_access_source else ""
+            print(f"  {Colors.BOLD}{Colors.GREEN}➜{Colors.RESET}  {Colors.BOLD}Web UI:{Colors.RESET}    {Colors.BOLD}{Colors.CYAN}{self.web_url}{Colors.RESET}{Colors.DIM}{access_tag}{Colors.RESET}")
+        elif self.web_base_url and self.launch_mode == "cloudcli":
+            access_tag = f" [{self.web_access_source}]" if self.web_access_source else ""
+            print(f"  {Colors.BOLD}{Colors.GREEN}➜{Colors.RESET}  {Colors.BOLD}Web UI:{Colors.RESET}    {Colors.CYAN}{self.web_base_url}{Colors.RESET}{Colors.DIM}{access_tag}{Colors.RESET}")
         elif self.launch_mode == "cloudcli" and self.web_capability in ("unavailable", "degraded"):
             print(f"  {Colors.BOLD}{Colors.YELLOW}➜{Colors.RESET}  {Colors.BOLD}Web UI:{Colors.RESET}    {Colors.YELLOW}不可用，已降级{Colors.RESET} {Colors.DIM}({self.web_failure_reason or 'unknown'}){Colors.RESET}")
         
@@ -234,7 +257,7 @@ class ShadowDevServer:
             provider=self.provider,
             shadow_files=self.repo.scan_shadow_files(),
             sync_git_pull=False,
-            public_url=os.environ.get("GIT_SHADOW_CLOUDCLI_PUBLIC_URL", "https://cli.daduiot.com"),
+            public_url=self.web_base_url if include_cloudcli else None,
             cloudcli_base_url=None,
             cloudcli_token=os.environ.get("GIT_SHADOW_CLOUDCLI_TOKEN", "").strip() or None,
             include_wip=self.with_wip,
@@ -376,7 +399,19 @@ class ShadowDevServer:
             log_hmr("web", f"⚠ CloudCLI 仍不可用，保持同步模式，不提交无效 Session 请求 ({self.web_failure_reason})", Colors.YELLOW)
             return
 
-        log_hmr("action", "CloudCLI 能力探针通过，正在请求新的 Web 远程控制台会话...", Colors.CYAN)
+        if not self.web_base_url and not self._resolve_web_access():
+            log_hmr(
+                "web",
+                f"⚠ CloudCLI 已运行，但没有可用浏览器接入路径 ({self.web_failure_reason})",
+                Colors.YELLOW,
+            )
+            return
+
+        log_hmr(
+            "action",
+            f"CloudCLI 能力探针通过，使用 {self.web_access_source} 接入路径创建会话...",
+            Colors.CYAN,
+        )
         try:
             self.push_update(include_cloudcli=True)
             if not self.web_url and self.web_capability == "available":
@@ -510,6 +545,21 @@ class ShadowDevServer:
                         f"Git/Shadow 同步继续 ({self.web_failure_reason})",
                         Colors.YELLOW,
                     )
+
+            if include_cloud and not self._resolve_web_access():
+                include_cloud = False
+                log_hmr(
+                    "web",
+                    f"⚠ CloudCLI 服务已就绪，但无可用浏览器接入路径；"
+                    f"降级为 sync-only ({self.web_failure_reason})",
+                    Colors.YELLOW,
+                )
+            elif include_cloud:
+                log_hmr(
+                    "web",
+                    f"✔ Web 接入路径: {self.web_base_url} [{self.web_access_source}]",
+                    Colors.GREEN,
+                )
 
         try:
             _, plan, ms = self.push_update(include_cloudcli=include_cloud)

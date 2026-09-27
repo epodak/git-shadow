@@ -300,6 +300,89 @@ git shadow run aws-micro cloudcli --no-bootstrap
 
 详见：[Remote Capability Bootstrap](docs/REMOTE_CAPABILITY_BOOTSTRAP.md)。
 
+## Web 接入路径：Tailscale + Cloudflare 优势互补
+
+CloudCLI 本体始终保持本地监听：
+
+~~~text
+127.0.0.1:3001
+~~~
+
+git-shadow 不再假设某个固定公网域名，而是增加独立的 Access Path 层：
+
+~~~text
+本地浏览器
+   │
+   ├─ Tailscale Serve ──→ VPS:127.0.0.1:3001
+   │      私网、Tailnet ACL、无需公开服务端口
+   │
+   └─ 配置的公网 URL ──→ Cloudflare Tunnel 等 ──→ VPS:127.0.0.1:3001
+          自定义域名、跨 Tailnet 访问、Cloudflare 安全/边缘能力
+~~~
+
+默认策略是 `--access auto`：
+
+~~~text
+同一 Tailnet + direct       → 优先 Tailscale
+同一 Tailnet + peer-relay   → 优先 Tailscale
+Tailscale 只能 DERP
+  + 已配置公网 URL           → 优先公网 URL
+Tailscale 只能 DERP
+  + 未配置公网 URL           → 使用 Tailscale
+Tailscale 不可用
+  + 已配置公网 URL           → 使用公网 URL
+两者都不可用                 → Web 降级；Git/Shadow 继续同步
+~~~
+
+这不是“永远认为某一路更快”，而是根据实际连接状态选择。
+
+查看本地与 VPS 是否已处于可互访 Tailnet：
+
+~~~bash
+git shadow network status aws-micro
+~~~
+
+显式把 Linux VPS 纳入 Tailnet：
+
+~~~bash
+export GIT_SHADOW_TAILSCALE_AUTH_KEY="tskey-auth-..."
+git shadow network ensure aws-micro tailscale
+~~~
+
+Tailscale 入网属于带权限的主机身份变更，因此普通 `run/push/pull` **不会偷偷安装或登录 Tailscale**。自动安装目前只支持 Linux VPS，并要求 passwordless sudo。Auth Key 属于敏感凭据，不应提交到仓库；生产环境建议使用短期、受限或带 tag 的 Auth Key，并从秘密管理器注入。
+
+如果已经有 Cloudflare Tunnel，只需要把公网入口配置给 git-shadow：
+
+~~~bash
+export GIT_SHADOW_CLOUDFLARE_URL="https://cli.example.com"
+git shadow run aws-micro cloudcli --access auto
+~~~
+
+也可以单次显式指定：
+
+~~~bash
+git shadow run aws-micro cloudcli \
+  --cloudcli-public-url https://cli.example.com \
+  --access auto
+~~~
+
+强制走某一路：
+
+~~~bash
+git shadow run aws-micro cloudcli --access tailscale
+git shadow run aws-micro cloudcli --access public \
+  --cloudcli-public-url https://cli.example.com
+~~~
+
+因此推荐的实际部署不是“Cloudflare 和 Tailscale 二选一”，而是：
+
+~~~text
+Tailscale = 默认私网控制面 / 内部 Web 入口
+Cloudflare Tunnel = 公网域名入口 / 非 Tailnet 设备 / 备用路径
+~~~
+
+详见：[Adaptive Web Access Path Law](docs/decisions/2026-09-27_ADAPTIVE_WEB_ACCESS_PATH_LAW.md)。
+
 ## Edge Executor 与常驻 Service
 
 安装/更新远端 standalone edge executor：
@@ -373,6 +456,9 @@ git-shadow 当前遵循这些不变量：
 6. Runtime/依赖不通过 Shadow 搬运。
 7. CloudCLI 不可用不等于整个远端 host 不可用。
 8. SSH 不可用时，不尝试把“连接失败”误判为“应用缺失”并自动安装。
+9. CloudCLI 默认只监听 localhost，Web 暴露由独立 Access Path 层负责。
+10. 个人公网域名不能成为运行时代码的硬编码默认值。
+11. Tailscale 入网是显式的主机身份变更，普通同步命令不得隐式执行 sudo/登录。
 
 ## 常用命令
 
@@ -390,6 +476,9 @@ git shadow remote status <host> cloudcli
 git shadow remote plan <host> cloudcli
 git shadow remote ensure <host> cloudcli
 
+git shadow network status <host>
+git shadow network ensure <host> tailscale
+
 git shadow edge install <host>
 git shadow edge status <host> <job-id>
 git shadow edge resume <host> <job-id>
@@ -402,6 +491,7 @@ git shadow service <host> unload
 ## 更多设计文档
 
 - [Remote Capability Bootstrap](docs/REMOTE_CAPABILITY_BOOTSTRAP.md)
+- [Adaptive Web Access Path Law](docs/decisions/2026-09-27_ADAPTIVE_WEB_ACCESS_PATH_LAW.md)
 - [Branch-Scoped Workspace Routing Law](docs/decisions/2026-09-27_BRANCH_SCOPED_WORKSPACE_ROUTING_LAW.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Layered Sync Ownership Law](docs/decisions/2026-09-15_LAYERED_SYNC_OWNERSHIP_LAW.md)
@@ -532,6 +622,28 @@ git shadow remote ensure aws-micro cloudcli
 
 An explicit CloudCLI run automatically attempts repairable bootstrap unless disabled with --no-bootstrap.
 
+## Adaptive Web access
+
+CloudCLI remains bound to localhost. Browser access is resolved separately:
+
+~~~text
+CloudCLI 127.0.0.1:3001
+├─ Tailscale Serve   → private tailnet HTTPS
+└─ configured public URL → e.g. Cloudflare Tunnel
+~~~
+
+The default `--access auto` policy prefers a direct or peer-relay Tailscale path. When Tailscale is DERP-only and a public URL is configured, the public path is preferred. If neither Web path is available, Git/Shadow synchronization continues in sync-only mode.
+
+~~~bash
+git shadow network status aws-micro
+git shadow network ensure aws-micro tailscale
+
+GIT_SHADOW_CLOUDFLARE_URL=https://cli.example.com \
+  git shadow run aws-micro cloudcli --access auto
+~~~
+
+Tailscale enrollment is explicit and privileged; ordinary run/push/pull commands never silently install or authenticate Tailscale.
+
 ## Continuous workflow
 
 ~~~bash
@@ -549,6 +661,9 @@ The watcher synchronizes Shadow state bidirectionally through CAS and only fast-
 - heavy runtime dependencies stay native to the remote host.
 - CloudCLI failure degrades to sync-only instead of disabling the host.
 - bootstrap never treats an SSH connection failure as an application installation problem.
+- CloudCLI stays localhost-bound; browser exposure belongs to the Access Path layer.
+- no personal public hostname is a runtime default.
+- privileged Tailscale enrollment is explicit.
 
 See [docs](docs/) for protocol, security, bootstrap, and roadmap details.
 

@@ -30,6 +30,10 @@ class TestCliContract(unittest.TestCase):
         self.assertIn("失败自动降级为同步模式", result.stdout)
         self.assertIn("remote ensure <host> cloudcli", result.stdout)
         self.assertIn("--no-bootstrap", result.stdout)
+        self.assertIn("network status <host>", result.stdout)
+        self.assertIn("network ensure <host> tailscale", result.stdout)
+        self.assertIn("--access <mode>", result.stdout)
+        self.assertIn("--cloudcli-public-url <url>", result.stdout)
 
 
 if __name__ == "__main__":
