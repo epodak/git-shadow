@@ -424,6 +424,38 @@ class TestEdgeProtocol(unittest.TestCase):
         self.assertNotIn("patch.apply", [step["action"] for step in default_plan["steps"]])
         self.assertIn("patch.apply", [step["action"] for step in wip_plan["steps"]])
 
+    def test_auto_branch_route_step_precedes_workspace_create(self):
+        from git_shadow.engine import ShadowEngine
+
+        repo = SimpleNamespace(
+            root_dir=str(self.workspace),
+            remote_url="https://example.invalid/AI.git",
+            repo_name="AI",
+            branch="foo/bar",
+            commit="abc123",
+            is_git=True,
+            is_dirty=False,
+        )
+        engine = ShadowEngine.__new__(ShadowEngine)
+        engine.repo = repo
+        engine.remote_dir = "/home/agent/wkspace/AI/foo/bar"
+        engine._auto_branch_routing = True
+
+        plan = engine.build_edge_plan(include_cloudcli=False, shadow_files=[])
+
+        self.assertEqual(
+            [step["action"] for step in plan["steps"]],
+            ["workspace.route", "workspace.create", "workspace.prepare"],
+        )
+        self.assertEqual(
+            plan["steps"][0]["repo_root"],
+            "/home/agent/wkspace/AI",
+        )
+        self.assertEqual(
+            plan["steps"][0]["target"],
+            "/home/agent/wkspace/AI/foo/bar",
+        )
+
     def test_cloudcli_session_is_before_git_prepare(self):
         from git_shadow.engine import ShadowEngine
 
