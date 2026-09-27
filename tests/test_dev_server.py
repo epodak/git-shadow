@@ -4,6 +4,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+
+from git_shadow.paths import test_temp_root
 from unittest.mock import MagicMock, patch
 
 from git_shadow.dev_server import ShadowDevServer, log_hmr
@@ -11,7 +13,7 @@ from git_shadow.dev_server import ShadowDevServer, log_hmr
 
 class TestDevServer(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_devserver_"))
+        self.temp_dir = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_devserver_", dir=str(test_temp_root())))
         import subprocess
         subprocess.run(["git", "init", str(self.temp_dir)], capture_output=True, check=True)
 
