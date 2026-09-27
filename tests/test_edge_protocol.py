@@ -475,6 +475,45 @@ class TestEdgeProtocol(unittest.TestCase):
             ["workspace.create", "cloudcli.session", "workspace.prepare"],
         )
 
+    def test_cloudcli_plan_has_no_public_hostname_without_explicit_access_path(self):
+        from git_shadow.engine import ShadowEngine
+
+        repo = SimpleNamespace(
+            root_dir=str(self.workspace),
+            remote_url="https://example.invalid/repo.git",
+            branch="main",
+            commit="abc123",
+            is_dirty=False,
+        )
+        engine = ShadowEngine.__new__(ShadowEngine)
+        engine.repo = repo
+        engine.remote_dir = str(self.workspace / "no-public-default")
+        engine._auto_branch_routing = False
+
+        plan = engine.build_edge_plan(
+            provider="codex",
+            include_cloudcli=True,
+            shadow_files=[],
+        )
+        session = next(
+            step for step in plan["steps"] if step["action"] == "cloudcli.session"
+        )
+        self.assertNotIn("public_url", session)
+
+        explicit = engine.build_edge_plan(
+            provider="codex",
+            include_cloudcli=True,
+            shadow_files=[],
+            public_url="https://cloudcli.example.invalid/",
+        )
+        explicit_session = next(
+            step for step in explicit["steps"] if step["action"] == "cloudcli.session"
+        )
+        self.assertEqual(
+            explicit_session["public_url"],
+            "https://cloudcli.example.invalid",
+        )
+
     def test_cloudcli_token_is_carried_only_when_explicitly_provided(self):
         from git_shadow.engine import ShadowEngine
 
