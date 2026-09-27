@@ -113,6 +113,16 @@ def print_help():
 SUPPORTED_PROVIDERS = ("codex", "claude", "cursor", "opencode")
 
 
+def current_named_branch(project_root: str) -> str:
+    """Return the currently checked-out named branch, or an empty string."""
+    code, out, _ = run_cmd(
+        ["git", "branch", "--show-current"],
+        cwd=project_root,
+        check=False,
+    )
+    return out.strip() if code == 0 else ""
+
+
 def choose_provider(requested: Optional[str]) -> str:
     """Choose the provider before CloudCLI creates its immutable session row."""
     provider = (requested or os.environ.get("GIT_SHADOW_PROVIDER", "")).strip().lower()
@@ -764,6 +774,8 @@ def main(args: Optional[List[str]] = None):
         last_pull = now
         last_git_pull = now
         git_pull_blocked = False
+        expected_branch = repo.branch if repo.is_git else ""
+        last_branch_check = 0.0
         git_pull_interval = max(2.0, float(opts.git_pull_interval))
         shadow_pull_interval = max(3.0, float(getattr(opts, "shadow_pull_interval", 10.0)))
         log_info("已进入个人持续同步：.gitshadow 自动双向 CAS，Git 仅对干净分支执行 ff-only 自动拉取。")
@@ -779,8 +791,22 @@ def main(args: Optional[List[str]] = None):
                     if stop_event.is_set():
                         break
                     now = time.monotonic()
+                    if expected_branch and now - last_branch_check >= 1.0:
+                        actual_branch = current_named_branch(repo.root_dir)
+                        last_branch_check = now
+                        if actual_branch != expected_branch:
+                            shown = actual_branch or "<detached>"
+                            log_warn(
+                                "检测到本地 Git 分支已从 [%s] 切换为 [%s]；"
+                                "为防止 Shadow 串到旧分支工作区，当前 watcher 已停止。"
+                                "请在新分支重新运行 git shadow watch/run --watch。"
+                                % (expected_branch, shown)
+                            )
+                            stop_event.set()
+                            break
+
                     current = shadow_snapshot() if (not local_watcher.native or notified) else previous
-                    
+
                     # 1. 本地优先：检测到本地影子文件改动，立即推送到远端 (Local -> Remote Push)
                     if current != previous:
                         try:
