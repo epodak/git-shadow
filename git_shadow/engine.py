@@ -469,6 +469,10 @@ if not os.path.exists(db_path):
 try:
     con = sqlite3.connect(db_path)
     cur = con.cursor()
+    # Branch-scoped workspace identity requires an exact project path.
+    # A parent project (for example ~/wkspace/AI) must never hijack the
+    # session for ~/wkspace/AI/foo/bar.
+
     target_dir = "{self.remote_dir}"
     cur.execute(
         "SELECT session_id, custom_name, project_path FROM sessions WHERE isArchived = 0 AND project_path = ? ORDER BY updated_at DESC LIMIT 1",
