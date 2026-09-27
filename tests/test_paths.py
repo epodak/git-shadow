@@ -39,6 +39,28 @@ class TestGitShadowPaths(unittest.TestCase):
                 self.assertEqual(root, expected_home / "tmp" / "tests")
                 self.assertTrue(root.is_dir())
 
+    def test_cleanup_test_tree_retries_until_directory_is_gone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "flaky"
+            target.mkdir()
+            (target / "x.txt").write_text("x", encoding="utf-8")
+
+            real_rmtree = paths.shutil.rmtree
+            calls = {"count": 0}
+
+            def flaky_rmtree(path, onerror=None):
+                calls["count"] += 1
+                if calls["count"] < 3:
+                    return None
+                return real_rmtree(path, onerror=onerror)
+
+            with patch.object(paths.shutil, "rmtree", side_effect=flaky_rmtree):
+                with patch.object(paths.time, "sleep", return_value=None):
+                    self.assertTrue(paths.cleanup_test_tree(target, attempts=4))
+
+            self.assertGreaterEqual(calls["count"], 3)
+            self.assertFalse(target.exists())
+
     def test_legacy_local_state_moves_only_when_destination_is_absent(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = pathlib.Path(tmp)
