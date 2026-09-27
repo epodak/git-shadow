@@ -4,54 +4,53 @@ Date: 2026-09-27
 
 ## Context
 
-git-shadow previously treated the remote workspace as a repository-scoped path:
+Older git-shadow versions treated the repository name as the complete remote
+workspace identity:
 
-~~~
+~~~text
 ~/wkspace/<repo>
 ~~~
 
-That is not a sufficient identity once the local checkout represents a named Git
-branch. A local checkout of repository AI on branch foo/bar would collide with
-main or any other branch because all of them resolved to the same remote path.
-
-The local binding store had the same defect: its key was only the local project
-root, so switching branches could recover a remote_dir that belonged to the
-previous branch.
+That identity is insufficient once one local checkout moves between named Git
+branches. AI/main and AI/foo/bar would otherwise share Git checkout state,
+Shadow CAS acknowledgement, CloudCLI project paths and local binding memory.
 
 ## Decision
 
-A named Git workspace is identified by the pair:
+For Git repositories:
 
+~~~text
+WorkspaceIdentity = Repository + Branch
+WorkspaceRoute    = <workspace-root>/<repo>/<branch segments>
 ~~~
-(repository, branch)
-~~~
-
-The branch namespace is preserved as a directory namespace.
 
 Example:
 
-~~~
+~~~text
 repository: AI
 branch:     foo/bar
 
-remote workspace:
+remote:
 ~/wkspace/AI/foo/bar
 ~~~
 
-A plain non-Git folder has no branch identity and therefore remains:
+Branch slashes are intentionally preserved as directory hierarchy.
 
+For plain non-Git folders:
+
+~~~text
+WorkspaceIdentity = Project
+WorkspaceRoute    = <workspace-root>/<project>
 ~~~
-~/wkspace/<project>
-~~~
 
-RepoState's synthetic plain-folder main value must never create a fake /main
-directory.
+RepoState's synthetic main placeholder must never create a fake branch directory
+for a plain folder.
 
-## Routing function
+## Canonical routing function
 
-All automatic routing must use one canonical function:
+All automatic routing uses the same canonical function:
 
-~~~python
+~~~text
 workspace_relative_path(repo_name, branch, is_git)
 ~~~
 
@@ -63,11 +62,11 @@ AI + foo/bar    -> AI/foo/bar
 notes + no Git  -> notes
 ~~~
 
-Traversal components and unsafe path separators are rejected.
+Traversal components and unsafe control/path characters are rejected.
 
 ## Binding identity
 
-Bindings must use the same branch identity.
+Bindings use the same branch identity.
 
 Old:
 
@@ -81,15 +80,14 @@ New:
 binding key = local project root + named branch
 ~~~
 
-Therefore the same checkout path can move between main and foo/bar without
-reusing the other branch's remote_dir or launch preference.
+Therefore one local checkout can move between main and foo/bar without reusing
+the other branch's remote_dir or launch preference.
 
-Legacy path-only bindings are not silently reused for a named branch. Silent
-reuse would recreate the original collision.
+Legacy path-only bindings are not silently reused for a branch-specific request.
 
 ## Git transport
 
-A branch-scoped workspace must also be branch-scoped at the Git layer.
+A branch-scoped workspace is also branch-scoped at the Git layer.
 
 New workspaces use:
 
@@ -97,45 +95,99 @@ New workspaces use:
 git clone --branch <branch> --single-branch ...
 ~~~
 
-When workspace.create has already created the target directory for an early
-CloudCLI Session, workspace.prepare initializes Git in place and writes:
+Existing workspaces fetch the explicit branch refspec:
 
 ~~~text
-remote.origin.fetch =
 +refs/heads/<branch>:refs/remotes/origin/<branch>
 ~~~
 
-Subsequent refreshes fetch that explicit refspec only.
+When workspace.create has already created an empty target for an early CloudCLI
+session, workspace.prepare initializes Git in place and persists the same
+single-branch remote.origin.fetch rule.
 
-The directory and the Git ref namespace therefore describe the same object.
+The filesystem route and the Git ref namespace therefore describe the same
+branch scope.
+
+## Legacy repo-root migration
+
+A previous git-shadow version may already have:
+
+~~~text
+~/wkspace/AI/.git
+~~~
+
+Creating ~/wkspace/AI/foo/bar directly in that state would put one workspace
+inside another Git worktree. That is invalid.
+
+The Edge plan therefore inserts a typed migration action before workspace.create:
+
+~~~text
+workspace.route
+→ workspace.create
+→ cloudcli.session (optional)
+→ workspace.prepare
+→ shadow.sync
+~~~
+
+workspace.route performs the following operation only for automatically routed
+Git workspaces:
+
+1. Check whether <workspace>/<repo> itself is a Git worktree.
+2. Read the actual current branch of that legacy worktree.
+3. Rename the whole worktree to a temporary sibling path.
+4. Recreate <workspace>/<repo> as a container directory.
+5. Move the untouched old worktree into its own branch route.
+6. Continue preparing the requested branch route.
+
+Example:
+
+~~~text
+before:
+~/wkspace/AI/.git                  # actual branch = main
+
+after migration:
+~/wkspace/AI/main/.git
+
+requested later:
+~/wkspace/AI/foo/bar/.git
+~~~
+
+The migration moves the complete worktree. It does not clean, reset, stash, or
+copy it, so dirty and untracked files move with the workspace.
+
+If migration fails, git-shadow removes only empty directories created by that
+migration and restores the staged legacy worktree whenever rollback is possible.
+It never deletes concurrent user content during rollback.
+
+Explicit -d/--dest remains user-owned routing and is not automatically migrated.
 
 ## Shadow implication
 
-Shadow CAS acknowledgement state already includes:
+Shadow acknowledgement already scopes state by:
 
 ~~~text
-remote_host + remote target directory
+remote host + resolved remote target
 ~~~
 
-Because the target directory is now branch-scoped, the existing Shadow manifest
-store automatically isolates:
+Because the target now includes the branch route, the existing Shadow manifest
+store naturally separates:
 
 ~~~text
-host + AI/main
-host + AI/foo/bar
+host-a + ~/wkspace/AI/main
+host-a + ~/wkspace/AI/foo/bar
 ~~~
 
-No second branch key is needed inside ShadowManifestStore.
+No second branch field is required inside ShadowManifestStore.
 
 ## CloudCLI implication
 
-CloudCLI receives the exact branch-scoped project_path. Sessions for AI/main and
-AI/foo/bar are distinct projects/workspaces instead of two UI sessions pointing
-at one mutable checkout.
+CloudCLI receives the exact same branch-scoped project_path. AI/main and
+AI/foo/bar therefore become distinct project/session paths instead of two
+sessions pointing at one mutable checkout.
 
 ## Discovery
 
-Remote discovery must search the exact route first:
+Remote discovery searches the exact branch route:
 
 ~~~text
 ~/wkspace/AI/foo/bar
@@ -143,47 +195,33 @@ Remote discovery must search the exact route first:
 ~/projects/AI/foo/bar
 ~~~
 
-If none exists, git-shadow chooses the same exact route for creation. The next
-run therefore converges on the same path instead of inventing another workspace.
+If none exists, git-shadow chooses the same deterministic route for creation.
+The next run converges on that same path.
 
 ## Invariants
 
-1. One named Git branch maps to one deterministic remote directory.
-2. Two different branches of the same repository never share a remote checkout.
+1. One named Git branch maps to one deterministic automatic remote directory.
+2. Two different branches of one repository never share a remote checkout.
 3. Branch slash hierarchy is preserved in the filesystem route.
-4. A branch-scoped remote checkout fetches only its own branch refspec.
-5. Plain folders do not gain a fake branch directory.
+4. A branch-scoped checkout fetches only its own branch refspec.
+5. Plain folders do not gain a synthetic main directory.
 6. Binding memory is branch-aware.
-7. Shadow state remains isolated by the resulting target path.
-8. Git/Shadow/CloudCLI must all receive the same target directory identity.
+7. A branch workspace is never created inside a legacy repo-root Git worktree.
+8. Legacy migration preserves dirty and untracked files.
+9. Shadow, CloudCLI, Git and binding layers observe the same resolved workspace.
+10. Explicit custom destinations remain user-owned and are not rewritten.
 
-## Migration
+## Regression coverage
 
-Existing legacy workspaces such as:
-
-~~~text
-~/wkspace/AI
-~~~
-
-are left untouched. git-shadow does not automatically move them because active
-CloudCLI sessions or user files may still reference that path.
-
-The next named-branch run creates or discovers the new deterministic route:
-
-~~~text
-~/wkspace/AI/<branch>
-~~~
-
-After validation, the legacy workspace can be removed manually.
-
-## Tests
-
-Regression coverage must include:
+Tests cover:
 
 - foo/bar -> AI/foo/bar routing;
 - plain-folder routing without /main;
 - path traversal rejection;
-- branch-aware RemoteProbe route;
-- same local root with two independent branch bindings;
+- branch-aware RemoteProbe routing;
+- same local root with independent main and foo/bar bindings;
 - legacy path-only binding not reused for a named branch;
-- branch-scoped edge preparation with a single remote fetch refspec.
+- workspace.route appearing before workspace.create;
+- legacy repo-root migration preserving dirty/untracked files;
+- idempotent second workspace.route;
+- single-branch clone/fetch refspec behavior.
