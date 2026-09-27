@@ -278,6 +278,19 @@ class AccessPathManager:
                 "after": before,
             }
 
+        if (
+            before.get("remote_available")
+            and before.get("remote_tailnet")
+            and before.get("local_tailnet")
+            and before.get("remote_tailnet") != before.get("local_tailnet")
+        ):
+            return {
+                "success": False,
+                "changed": False,
+                "before": before,
+                "error": "remote-already-on-different-tailnet",
+            }
+
         key = configured_tailscale_auth_key(auth_key)
         if not key:
             return {
@@ -426,11 +439,25 @@ echo "GS_TS_READY=1"
             "url": None,
             "tailscale": ts,
         }
-        if pref in (ACCESS_AUTO, ACCESS_TAILSCALE) and ts.get("same_tailnet"):
+        connection = str(ts.get("connection") or "unknown")
+        should_prepare_serve = (
+            pref == ACCESS_TAILSCALE
+            or (
+                pref == ACCESS_AUTO
+                and ts.get("same_tailnet")
+                and not (connection == "derp" and configured_public)
+            )
+        )
+        if should_prepare_serve and ts.get("same_tailnet"):
             serve = self.ensure_cloudcli_serve(probe=ts)
+        elif (
+            pref == ACCESS_AUTO
+            and connection == "derp"
+            and configured_public
+        ):
+            serve["reason"] = "skipped-derp-public-preferred"
 
         ts_url = serve.get("url") if serve.get("success") else None
-        connection = str(ts.get("connection") or "unknown")
 
         if pref == ACCESS_PUBLIC:
             if configured_public:
