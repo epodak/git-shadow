@@ -4,12 +4,14 @@ import subprocess
 import tempfile
 import unittest
 
+from git_shadow.paths import test_temp_root
+
 from git_shadow.edge_agent import EdgeExecutor
 
 
 class TestWorkspacePrepare(unittest.TestCase):
     def setUp(self):
-        self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_workspace_", dir=str(pathlib.Path.home())))
+        self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_workspace_", dir=str(test_temp_root())))
         self.seed = self.root / "seed"
         self.origin = self.root / "origin.git"
         self.target = self.root / "target"
