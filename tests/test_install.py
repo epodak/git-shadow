@@ -3,12 +3,14 @@ import shutil
 import tempfile
 import unittest
 
+from git_shadow.paths import test_temp_root
+
 from git_shadow.install import install_wrappers
 
 
 class TestInstall(unittest.TestCase):
     def test_install_creates_hot_reload_wrappers(self):
-        root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_install_", dir=str(pathlib.Path.home())))
+        root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_install_", dir=str(test_temp_root())))
         try:
             paths = install_wrappers(str(root))
             self.assertEqual([path.name for path in paths], ["git-shadow", "git-shadow.cmd"])
