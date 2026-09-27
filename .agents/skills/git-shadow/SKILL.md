@@ -52,6 +52,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
   *覆盖：401 令牌过期读取 `auth.db` 离线签发 7 天 HS256 JWT、409 项目存在幂等复用、乐观深链。*
 - **持续自动同步与租约自毁**：👉 [CONTINUOUS_SILENT_SYNC.md](references/CONTINUOUS_SILENT_SYNC.md)
 - **分支工作区路由法则**：👉 [Branch-Scoped Workspace Routing ADR](../../../docs/decisions/2026-09-27_BRANCH_SCOPED_WORKSPACE_ROUTING_LAW.md)
+- **Web 接入路径法则**：👉 [Adaptive Web Access Path ADR](../../../docs/decisions/2026-09-27_ADAPTIVE_WEB_ACCESS_PATH_LAW.md)
   *覆盖：10 分钟 Lease 超时内存回收、Windows/Linux 监听机制差异、双端 Edge 对称演进路线。*
 
 ---
@@ -105,7 +106,7 @@ git shadow auth sync aws
 
 # 3. 投影并自动弹开浏览器
 git shadow run aws cloudcli --provider codex
-# -> 浏览器将自动打开 https://cli.daduiot.com，进入对应工作区
+# -> 浏览器地址由 Access Path 动态解析：优先可用的 Tailscale 私网路径，或使用配置的公网 URL
 ```
 
 ### 场景 B：长时间开发（范式 B 服务治理 + 本地 watcher）
