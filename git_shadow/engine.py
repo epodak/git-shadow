@@ -463,17 +463,15 @@ if not os.path.exists(db_path):
 try:
     con = sqlite3.connect(db_path)
     cur = con.cursor()
-    # 优先匹配当前工作区路径或父级目录关联的活跃会话
+    # Branch-scoped workspace identity requires an exact project path.
+    # A parent project (for example ~/wkspace/AI) must never hijack the
+    # session for ~/wkspace/AI/foo/bar.
     target_dir = "{self.remote_dir}"
     cur.execute(
-        "SELECT session_id, custom_name, project_path FROM sessions WHERE isArchived = 0 AND (project_path = ? OR ? LIKE project_path || '%') ORDER BY updated_at DESC LIMIT 1",
-        (target_dir, target_dir)
+        "SELECT session_id, custom_name, project_path FROM sessions WHERE isArchived = 0 AND project_path = ? ORDER BY updated_at DESC LIMIT 1",
+        (target_dir,)
     )
     row = cur.fetchone()
-    if not row:
-        # 若无工作区精准匹配，获取全局最新的活跃会话
-        cur.execute("SELECT session_id, custom_name, project_path FROM sessions WHERE isArchived = 0 ORDER BY updated_at DESC LIMIT 1")
-        row = cur.fetchone()
 
     if row:
         print(f"SESSION:{{row[0]}}")
