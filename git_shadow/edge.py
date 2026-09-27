@@ -53,7 +53,7 @@ def clean_ssh_args(host: str, remote_command: str, connect_timeout: int = 10) ->
 class EdgeClient:
     """Submit and stream a job over one SSH JSONL connection."""
 
-    remote_agent_path = "$HOME/.local/share/git-shadow/bin/git-shadow-edge-agent.py"
+    remote_agent_path = "$HOME/.git-shadow/bin/git-shadow-edge-agent.py"
 
     def __init__(self, remote_host: str, python_executable: str = "python3"):
         self.remote_host = remote_host
@@ -109,16 +109,25 @@ class EdgeClient:
             detail = output_text(check.stderr).strip() or "ssh exit code %s" % check.returncode
             log_warn("VPS 边缘执行器探测失败，将尝试重新安装: %s" % detail[-1000:])
 
+        migration = (
+            "if [ ! -e ~/.git-shadow ] && [ -d ~/.local/share/git-shadow ]; then "
+            "mv ~/.local/share/git-shadow ~/.git-shadow; fi; "
+            "mkdir -p ~/.git-shadow/bin"
+        )
+        migrated = self._run_ssh(migration)
+        if migrated.returncode != 0:
+            log_warn("VPS git-shadow 目录迁移未完成，将继续尝试新目录安装。")
+
         payload = base64.b64encode(source_path.read_bytes())
         # Tilde expansion must happen in a shell, so keep the destination path
         # literal and quote only the command's fixed pieces.
         # 跨平台稳固解码：兼容 Python3 / Linux (base64 -d) / macOS (base64 -D)
         command = (
-            "mkdir -p ~/.local/share/git-shadow/bin && "
+            "mkdir -p ~/.git-shadow/bin && "
             "(python3 -c \"import sys, base64; sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read()))\" 2>/dev/null "
             "|| base64 -d 2>/dev/null || base64 -D 2>/dev/null) "
-            "> ~/.local/share/git-shadow/bin/git-shadow-edge-agent.py && "
-            "chmod 700 ~/.local/share/git-shadow/bin/git-shadow-edge-agent.py"
+            "> ~/.git-shadow/bin/git-shadow-edge-agent.py && "
+            "chmod 700 ~/.git-shadow/bin/git-shadow-edge-agent.py"
         )
         uploaded = self._run_ssh(command, input_data=payload)
         if uploaded.returncode != 0:
