@@ -285,7 +285,7 @@ class EdgeExecutor:
     ):
         self.home = pathlib.Path.home().resolve()
         self.state_root = ensure_inside(
-            state_root or os.environ.get("GIT_SHADOW_STATE_DIR", str(self.home / ".local/share/git-shadow")),
+            state_root or os.environ.get("GIT_SHADOW_STATE_DIR", str(self.home / ".git-shadow")),
             self.home,
         )
         self.state_root.mkdir(parents=True, exist_ok=True)
