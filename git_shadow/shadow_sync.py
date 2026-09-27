@@ -14,6 +14,8 @@ import pathlib
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
+from .paths import local_state_root
+
 
 def sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
@@ -47,10 +49,11 @@ class ShadowManifestStore:
     def __init__(self, project_root: str, state_root: Optional[str] = None, remote_scope: Optional[str] = None):
         self.project_root = pathlib.Path(project_root).resolve()
         self.remote_scope = str(remote_scope).strip() if remote_scope else None
-        default_root = pathlib.Path.home() / ".local/state/git-shadow"
-        self.state_root = pathlib.Path(
-            state_root or os.environ.get("GIT_SHADOW_LOCAL_STATE_DIR", str(default_root))
-        ).expanduser()
+        self.state_root = (
+            pathlib.Path(state_root).expanduser()
+            if state_root
+            else local_state_root()
+        )
         state_key = project_key(str(self.project_root))
         if self.remote_scope:
             state_key += "-" + scope_key(self.remote_scope)
