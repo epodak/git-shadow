@@ -76,7 +76,7 @@
 * **当初是基于什么搞出来的？**
   早期文档充斥着“范式 A / 范式 B / 租约自毁 / 内核事件”等抽象概念，却没有画出质朴的物理链路图，导致用户怀疑 Mac 上是不是一直挂着个失控的常驻脚本。
 * **哪里没有说清楚？**
-  **没有用人话讲透“远端压根没有常驻守护进程”**！远端只有一份按需启动的无状态脚本（`~/.local/share/git-shadow/bin/git-shadow-edge-agent.py`），本地通过 SSH 管道喂入 JSON Plan，远端执行完就退出并把事件留痕在 `runs/<job-id>`。
+  **没有用人话讲透“远端压根没有常驻守护进程”**！远端只有一份按需启动的无状态脚本（`~/.git-shadow/bin/git-shadow-edge-agent.py`），本地通过 SSH 管道喂入 JSON Plan，远端执行完就退出并把事件留痕在 `runs/<job-id>`。
 
 ### 2.6 认知断层六：“因噎废食式”的过度防御与一刀切过矫正
 * **后来又怎么走偏了？**
@@ -151,9 +151,9 @@
 - 零控制台输出，零网络包消耗，仅为状态查询命令（`shadow status`）提供本地进程的存活判定。
 
 ### 3.6 无状态边缘代理拓扑定性 (`StatelessEdgeRPCTopology`)
-- 远端 Mac 上的真实运行形态定性为纯无状态 SSH RPC 代理（`~/.local/share/git-shadow/bin/git-shadow-edge-agent.py`）；
+- 远端 Mac 上的真实运行形态定性为纯无状态 SSH RPC 代理（`~/.git-shadow/bin/git-shadow-edge-agent.py`）；
 - **无常驻常开的后台失控守护进程**，完全由本地 SSH 管道触发、随任务结束而退出；
-- 任务执行详情脱敏记录于 `~/.local/share/git-shadow/runs/<job-id>/events.ndjson`，随时可追溯审计。
+- 任务执行详情脱敏记录于 `~/.git-shadow/runs/<job-id>/events.ndjson`，随时可追溯审计。
 
 ---
 
