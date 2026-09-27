@@ -292,7 +292,7 @@ git shadow run aws-micro cloudcli --no-bootstrap
 - 不要求 sudo；
 - 不修改项目目录；
 - 不修改 .bashrc / .zshrc；
-- 运行时资产放在 ~/.local/share/git-shadow；
+- 运行时资产放在 ~/.git-shadow；
 - Linux 优先 systemd --user；
 - macOS 优先 launchd；
 - 不可用时回退到 nohup；
