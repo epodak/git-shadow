@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 import unittest
 
-from git_shadow.paths import test_temp_root
+from git_shadow.paths import cleanup_test_tree, test_temp_root
 
 from git_shadow.git_sync import auto_fast_forward_pull
 
@@ -30,7 +30,7 @@ class TestGitSync(unittest.TestCase):
         subprocess.run(["git", "checkout", "-B", "main", "origin/main"], cwd=self.local, check=True, capture_output=True)
 
     def tearDown(self):
-        shutil.rmtree(self.root, ignore_errors=True)
+        cleanup_test_tree(self.root)
 
     def test_clean_branch_fast_forwards_from_origin(self):
         (self.writer / "README.md").write_text("next\n", encoding="utf-8")
