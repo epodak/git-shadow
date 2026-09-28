@@ -25,7 +25,7 @@ VPS 端需要能够接收一组命令，在远端完成执行，并把进度异�
 
 ```text
 ssh -o RemoteCommand=none -o RequestTTY=no <host> \
-  '$HOME/.local/share/git-shadow/bin/git-shadow-edge-agent.py --rpc'
+  '$HOME/.git-shadow/bin/git-shadow-edge-agent.py --rpc'
 ```
 
 stdin 发送 JSONL 请求，stdout 返回 JSONL 事件。所有非交互 SSH 必须显式关闭 `RemoteCommand` 和 TTY，以避免远端 `~/.ssh/config` 中的 zellij/tmux 配置污染自动化通道。
@@ -58,7 +58,7 @@ job.completed / job.failed
 VPS 为每个任务保存：
 
 ```text
-~/.local/share/git-shadow/runs/<job_id>/
+~/.git-shadow/runs/<job_id>/
 ├── request.json       # 已脱敏请求元数据
 ├── state.json         # 当前状态
 └── events.ndjson      # 可追加、可重放事件日志

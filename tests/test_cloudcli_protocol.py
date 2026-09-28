@@ -4,6 +4,8 @@ import shutil
 import tempfile
 import threading
 import unittest
+
+from git_shadow.paths import cleanup_test_tree, test_temp_root
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from git_shadow.edge_agent import EdgeExecutor
@@ -11,7 +13,7 @@ from git_shadow.edge_agent import EdgeExecutor
 
 class TestCloudCLIProtocol(unittest.TestCase):
     def setUp(self):
-        self.state_dir = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_cloudcli_", dir=str(pathlib.Path.home())))
+        self.state_dir = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_cloudcli_", dir=str(test_temp_root())))
         self.records = []
         self.auth_records = []
 
@@ -43,7 +45,7 @@ class TestCloudCLIProtocol(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.server_thread.join(timeout=2)
-        shutil.rmtree(self.state_dir, ignore_errors=True)
+        cleanup_test_tree(self.state_dir)
 
     def test_session_is_created_after_directory_and_before_git_prepare(self):
         target = self.state_dir / "project"

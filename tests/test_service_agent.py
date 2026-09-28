@@ -8,10 +8,12 @@ import tempfile
 import time
 import unittest
 
+from git_shadow.paths import cleanup_test_tree, test_temp_root
+
 
 class TestServiceAgent(unittest.TestCase):
     def setUp(self):
-        self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_service_", dir=str(pathlib.Path.home())))
+        self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_service_", dir=str(test_temp_root())))
         self.service_root = self.root / "service"
         self.state_root = self.root / "state"
         self.workspace = self.root / "workspace"
@@ -19,7 +21,7 @@ class TestServiceAgent(unittest.TestCase):
         self.service_path = pathlib.Path(__file__).resolve().parents[1] / "git_shadow" / "service_agent.py"
 
     def tearDown(self):
-        shutil.rmtree(self.root, ignore_errors=True)
+        cleanup_test_tree(self.root)
 
     def _start(self, ttl=30):
         process = subprocess.Popen(

@@ -4,6 +4,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+
+from git_shadow.paths import cleanup_test_tree, test_temp_root
 from unittest.mock import MagicMock, patch
 
 from git_shadow.dev_server import ShadowDevServer, log_hmr
@@ -11,12 +13,12 @@ from git_shadow.dev_server import ShadowDevServer, log_hmr
 
 class TestDevServer(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_devserver_"))
+        self.temp_dir = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_devserver_", dir=str(test_temp_root())))
         import subprocess
         subprocess.run(["git", "init", str(self.temp_dir)], capture_output=True, check=True)
 
     def tearDown(self):
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        cleanup_test_tree(self.temp_dir)
 
     def test_init_and_render_dashboard(self):
         server = ShadowDevServer(

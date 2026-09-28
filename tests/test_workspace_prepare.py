@@ -4,12 +4,14 @@ import subprocess
 import tempfile
 import unittest
 
+from git_shadow.paths import cleanup_test_tree, test_temp_root
+
 from git_shadow.edge_agent import EdgeExecutor
 
 
 class TestWorkspacePrepare(unittest.TestCase):
     def setUp(self):
-        self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_workspace_", dir=str(pathlib.Path.home())))
+        self.root = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_workspace_", dir=str(test_temp_root())))
         self.seed = self.root / "seed"
         self.origin = self.root / "origin.git"
         self.target = self.root / "target"
@@ -25,7 +27,7 @@ class TestWorkspacePrepare(unittest.TestCase):
         subprocess.run(["git", "push", "-u", "origin", "main"], cwd=self.seed, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def tearDown(self):
-        shutil.rmtree(self.root, ignore_errors=True)
+        cleanup_test_tree(self.root)
 
     def test_nonempty_cloudcli_directory_preserves_early_ai_file_after_git_prepare(self):
         self.target.mkdir()

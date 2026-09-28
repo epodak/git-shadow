@@ -21,7 +21,7 @@ class TestServiceClient(unittest.TestCase):
         loaded = client.load()
         self.assertEqual(loaded["status"], "running")
         self.assertIn("--serve", client.commands[0])
-        self.assertIn("--service-root \"$HOME/.local/share/git-shadow/services/", client.commands[0])
+        self.assertIn("--service-root \"$HOME/.git-shadow/services/", client.commands[0])
         self.assertNotIn(str(pathlib.Path.home()), client.commands[0])
 
         status = client.status()

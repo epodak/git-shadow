@@ -3,6 +3,8 @@ import sys
 import shutil
 import tempfile
 import unittest
+
+from git_shadow.paths import cleanup_test_tree, test_temp_root
 import subprocess
 
 # 确保能检索到当前工作区的 git_shadow
@@ -16,7 +18,7 @@ from git_shadow.scanner import RepoState
 class TestScanner(unittest.TestCase):
     def setUp(self):
         # 创建临时 Git 目录测试
-        self.test_dir = tempfile.mkdtemp(prefix="git_shadow_test_")
+        self.test_dir = tempfile.mkdtemp(prefix="git_shadow_test_", dir=str(test_temp_root()))
         subprocess.run(["git", "init"], cwd=self.test_dir, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.name", "TestUser"], cwd=self.test_dir, check=True)
         subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.test_dir, check=True)
@@ -36,7 +38,7 @@ dist/
         subprocess.run(["git", "commit", "-m", "chore: init .gitignore"], cwd=self.test_dir, check=True)
 
     def tearDown(self):
-        shutil.rmtree(self.test_dir, ignore_errors=True)
+        cleanup_test_tree(self.test_dir)
 
     def test_shadow_filtering(self):
         """测试真正需要影子的文件与黑名单排除"""

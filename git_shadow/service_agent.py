@@ -327,7 +327,7 @@ def main(argv: Optional[list] = None) -> int:
     if not options.serve:
         parser.error("--serve or --send is required")
     home = pathlib.Path.home().resolve()
-    state_root = pathlib.Path(options.state_dir or home / ".local/share/git-shadow").expanduser().resolve()
+    state_root = pathlib.Path(options.state_dir or home / ".git-shadow").expanduser().resolve()
     try:
         service_root.relative_to(home)
         state_root.relative_to(home)

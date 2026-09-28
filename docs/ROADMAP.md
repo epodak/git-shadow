@@ -55,6 +55,7 @@ Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Wind
 - [x] `edge install` 失败时给出可恢复诊断
 - [x] 不依赖 `pip` 的 VPS 边缘执行器验收（standalone agent 协议测试）
 - [x] 独立 Remote Capability Bootstrap：复用现有 SSH，在 Linux/macOS 用户空间准备 CloudCLI，无需手工登录远端
+- [x] 统一本地/远端 git-shadow 状态根为 `~/.git-shadow`；测试临时目录收口到 `~/.git-shadow/tmp/tests`，旧 `.local/state|share/git-shadow` 仅做保守迁移兼容
 
 ### 1.2 CloudCLI 编排
 

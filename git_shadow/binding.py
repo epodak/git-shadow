@@ -16,12 +16,11 @@ from .probe import RemoteProbe
 from .remote_bootstrap import RemoteBootstrapManager, format_cloudcli_plan
 from .utils import Colors, NO_WINDOW_FLAG
 from .workspace_identity import branch_route, workspace_relative_path
+from .paths import local_state_root
 
 
 def get_bindings_file() -> pathlib.Path:
-    base = pathlib.Path.home() / ".local/state/git-shadow"
-    base.mkdir(parents=True, exist_ok=True)
-    return base / "bindings.json"
+    return local_state_root() / "bindings.json"
 
 
 def load_all_bindings() -> Dict[str, Dict[str, Any]]:

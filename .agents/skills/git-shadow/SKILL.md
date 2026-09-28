@@ -53,6 +53,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
 - **持续自动同步与租约自毁**：👉 [CONTINUOUS_SILENT_SYNC.md](references/CONTINUOUS_SILENT_SYNC.md)
 - **分支工作区路由法则**：👉 [Branch-Scoped Workspace Routing ADR](../../../docs/decisions/2026-09-27_BRANCH_SCOPED_WORKSPACE_ROUTING_LAW.md)
 - **Web 接入路径法则**：👉 [Adaptive Web Access Path ADR](../../../docs/decisions/2026-09-27_ADAPTIVE_WEB_ACCESS_PATH_LAW.md)
+- **统一状态目录法则**：👉 [Unified git-shadow Home ADR](../../../docs/decisions/2026-09-27_UNIFIED_GIT_SHADOW_HOME_LAW.md)
   *覆盖：10 分钟 Lease 超时内存回收、Windows/Linux 监听机制差异、双端 Edge 对称演进路线。*
 
 
@@ -72,6 +73,7 @@ description: 跨端 Git 代码基线与私有影子配置（.env/私钥）极速
   ```
 
 ### 1. 跨平台路径防污染 (Platform Isolation)
+- **git-shadow 自身状态只能写到统一根**：默认 `~/.git-shadow`；测试临时工作区必须位于 `~/.git-shadow/tmp/tests`，严禁再把 `git_shadow_*_xxxxxxxx` 直接创建到用户 Home 根目录；
 - **Windows MSYS2 绝对路径陷阱**：在 Windows Git Bash 下，严禁将 `/` 开头的绝对路径（如 `-d /home/...`）直接裸传给外部工具，MSYS2 会强行将其转译为 `D:/Tool/...` 等本地盘符；
 - **防御要求**：远端路径必须优先依赖远端环境探针感知的 `$HOME` 展开；命名 Git 分支必须遵循 branch-scoped route，例如仓库 `AI` 的 `foo/bar` 固定映射到 `/home/ubuntu/wkspace/AI/foo/bar`，严禁回退为多个分支共用 `wkspace/AI`。
 

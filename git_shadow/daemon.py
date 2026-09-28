@@ -17,6 +17,7 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from .shadow_sync import project_key
+from .paths import local_state_root
 
 
 def is_process_alive(pid: int) -> bool:
@@ -73,7 +74,7 @@ class LocalDaemonManager:
 
     def __init__(self, project_root: str, state_dir: Optional[str] = None):
         self.project_root = pathlib.Path(project_root).resolve()
-        default_dir = pathlib.Path.home() / ".local/state/git-shadow/daemon"
+        default_dir = local_state_root() / "daemon"
         self.state_dir = pathlib.Path(state_dir or default_dir).expanduser()
         self.state_dir.mkdir(parents=True, exist_ok=True)
         

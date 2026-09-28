@@ -10,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+
+from git_shadow.paths import cleanup_test_tree, test_temp_root
 from types import SimpleNamespace
 
 from git_shadow.edge import EdgeClient, clean_ssh_args
@@ -18,12 +20,12 @@ from git_shadow.edge import EdgeClient, clean_ssh_args
 class TestEdgeProtocol(unittest.TestCase):
     def setUp(self):
         self.home = pathlib.Path.home()
-        self.state_dir = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_edge_", dir=str(self.home)))
+        self.state_dir = pathlib.Path(tempfile.mkdtemp(prefix="git_shadow_edge_", dir=str(test_temp_root())))
         self.workspace = self.state_dir / "workspace"
         self.workspace.mkdir()
 
     def tearDown(self):
-        shutil.rmtree(self.state_dir, ignore_errors=True)
+        cleanup_test_tree(self.state_dir)
 
     def test_ssh_transport_disables_remote_commands_and_tty(self):
         args = clean_ssh_args("vps", "agent --rpc")

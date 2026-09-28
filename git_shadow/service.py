@@ -25,9 +25,9 @@ from .utils import log_success, log_warn
 class ServiceClient(EdgeClient):
     """Manage and submit jobs to the VPS resident service for one project."""
 
-    remote_service_agent_path = "$HOME/.local/share/git-shadow/bin/git-shadow-service-agent.py"
-    remote_service_state_root = "$HOME/.local/share/git-shadow/services"
-    remote_state_root = "$HOME/.local/share/git-shadow"
+    remote_service_agent_path = "$HOME/.git-shadow/bin/git-shadow-service-agent.py"
+    remote_service_state_root = "$HOME/.git-shadow/services"
+    remote_state_root = "$HOME/.git-shadow"
 
     def __init__(self, remote_host: str, project_root: str, python_executable: str = "python3"):
         super().__init__(remote_host, python_executable=python_executable)
@@ -71,7 +71,7 @@ class ServiceClient(EdgeClient):
             return True
         payload = base64.b64encode(source_path.read_bytes())
         command = (
-            "mkdir -p ~/.local/share/git-shadow/bin && "
+            "mkdir -p ~/.git-shadow/bin && "
             "base64 -d > \"%s\" && chmod 700 \"%s\""
             % (remote_path, remote_path)
         )

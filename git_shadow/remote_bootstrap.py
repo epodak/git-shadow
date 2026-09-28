@@ -45,9 +45,9 @@ class RemoteBootstrapManager:
             "detect remote OS with uname (supported: Linux, macOS)",
             "ensure Node.js >= 22; if absent/old, install user-scoped nvm %s + Node %s"
             % (NVM_VERSION, NODE_VERSION),
-            "install %s@%s into ~/.local/share/git-shadow/apps/cloudcli"
+            "install %s@%s into ~/.git-shadow/apps/cloudcli"
             % (CLOUDCLI_PACKAGE, CLOUDCLI_VERSION),
-            "write managed launcher ~/.local/share/git-shadow/bin/cloudcli",
+            "write managed launcher ~/.git-shadow/bin/cloudcli",
             "bind CloudCLI to 127.0.0.1:3001",
             "register systemd --user on Linux or launchd on macOS; fall back to nohup",
             "probe http://127.0.0.1:3001 and return capability state",
@@ -134,14 +134,33 @@ case "$OS" in
     ;;
 esac
 
-ROOT="$HOME/.local/share/git-shadow"
+ROOT="$HOME/.git-shadow"
+LEGACY_SHARE="$HOME/.local/share/git-shadow"
+LEGACY_STATE="$HOME/.local/state/git-shadow"
+
+mkdir -p "$ROOT"
+if [ -d "$LEGACY_SHARE" ]; then
+  for name in apps bin runtime services runs; do
+    if [ ! -e "$ROOT/$name" ] && [ -e "$LEGACY_SHARE/$name" ]; then
+      mv "$LEGACY_SHARE/$name" "$ROOT/$name"
+    fi
+  done
+fi
+if [ -d "$LEGACY_STATE" ]; then
+  for name in cloudcli.pid logs; do
+    if [ ! -e "$ROOT/$name" ] && [ -e "$LEGACY_STATE/$name" ]; then
+      mv "$LEGACY_STATE/$name" "$ROOT/$name"
+    fi
+  done
+fi
+
 RUNTIME_ROOT="$ROOT/runtime"
 NVM_DIR="$RUNTIME_ROOT/nvm"
 APP_ROOT="$ROOT/apps/cloudcli"
 BIN_DIR="$ROOT/bin"
-STATE_ROOT="$HOME/.local/state/git-shadow"
-LOG_DIR="$STATE_ROOT/logs"
-mkdir -p "$RUNTIME_ROOT" "$APP_ROOT" "$BIN_DIR" "$STATE_ROOT" "$LOG_DIR"
+STATE_ROOT="$ROOT"
+LOG_DIR="$ROOT/logs"
+mkdir -p "$RUNTIME_ROOT" "$APP_ROOT" "$BIN_DIR" "$LOG_DIR"
 
 export NVM_DIR
 export PATH="$BIN_DIR:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
@@ -224,7 +243,7 @@ After=network-online.target
 Type=simple
 Environment=HOST=127.0.0.1
 Environment=SERVER_PORT=3001
-ExecStart=%h/.local/share/git-shadow/bin/cloudcli start
+ExecStart=%h/.git-shadow/bin/cloudcli start
 Restart=on-failure
 RestartSec=3
 

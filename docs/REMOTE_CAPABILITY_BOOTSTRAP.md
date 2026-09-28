@@ -87,7 +87,7 @@ SSH failure is deliberately not interpreted as an application installation probl
 The bootstrapper does not write into the projected project workspace.
 
 ~~~
-~/.local/share/git-shadow/
+~/.git-shadow/
 ├── apps/
 │   └── cloudcli/              # managed npm prefix
 ├── bin/
@@ -95,7 +95,7 @@ The bootstrapper does not write into the projected project workspace.
 └── runtime/
     └── nvm/                   # fallback Node runtime only when needed
 
-~/.local/state/git-shadow/
+~/.git-shadow/
 ├── cloudcli.pid               # nohup fallback only
 └── logs/
     └── cloudcli.log
@@ -160,8 +160,8 @@ launchd
 If neither user service manager is usable, the fallback is nohup with state under:
 
 ~~~
-~/.local/state/git-shadow/cloudcli.pid
-~/.local/state/git-shadow/logs/cloudcli.log
+~/.git-shadow/cloudcli.pid
+~/.git-shadow/logs/cloudcli.log
 ~~~
 
 ## 7. Run-time flow

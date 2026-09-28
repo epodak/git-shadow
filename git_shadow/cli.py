@@ -533,16 +533,26 @@ def main(args: Optional[List[str]] = None):
 
         if edge_action in ("stop", "kill"):
             # 仅关停远端运行中的边缘进程，保留已安装文件与历史
-            cmd = "pkill -f 'git-shadow-edge-agent|git-shadow-service-agent' 2>/dev/null || true; rm -f ~/.local/share/git-shadow/services/*/service.sock 2>/dev/null || true"
+            cmd = "pkill -f 'git-shadow-edge-agent|git-shadow-service-agent' 2>/dev/null || true; rm -f ~/.git-shadow/services/*/service.sock 2>/dev/null || true"
             edge_client._run_ssh(cmd)
             log_success(f"已停止远端主机 [{edge_host}] 上的所有边缘进程与监听 Socket (保留安装脚本与配置)。")
             sys.exit(0)
 
         if edge_action in ("uninstall", "purge", "clean"):
-            # 彻底卸载远端边缘程序与所有运行时缓存/日志，零残留
-            cmd = "pkill -f 'git-shadow-edge-agent|git-shadow-service-agent' 2>/dev/null || true; rm -rf ~/.local/share/git-shadow"
+            # ~/.git-shadow is shared by multiple git-shadow subsystems.
+            # Edge uninstall must never erase CloudCLI runtime or local-style
+            # binding/Shadow state that may coexist on the same machine.
+            cmd = (
+                "pkill -f 'git-shadow-edge-agent|git-shadow-service-agent' 2>/dev/null || true; "
+                "rm -f ~/.git-shadow/bin/git-shadow-edge-agent.py "
+                "~/.git-shadow/bin/git-shadow-service-agent.py; "
+                "rm -rf ~/.git-shadow/runs ~/.git-shadow/services"
+            )
             edge_client._run_ssh(cmd)
-            log_success(f"已彻底卸载远端主机 [{edge_host}] 上的边缘程序与所有状态缓存 (零残留)。")
+            log_success(
+                f"已卸载远端主机 [{edge_host}] 的 Edge/Service 程序与任务状态；"
+                "保留 ~/.git-shadow 下其他子系统数据。"
+            )
             sys.exit(0)
 
         if edge_action == "install":
