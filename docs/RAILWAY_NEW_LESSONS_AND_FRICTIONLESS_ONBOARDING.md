@@ -853,3 +853,280 @@ Railway 最值得学习的地方是：
 对于 git-shadow，更具体地说：
 
 > 首次体验的目标不是“创建一个 git-shadow 用户”，而是“尽快让一个 Agent 在一个可恢复的远端 Workspace 里开始工作”。
+
+---
+
+## 22. 商业化方向：Workspace 是商品，VM 是实现细节
+
+Railway 带来的更深层启发不是如何卖一台便宜 VM，而是：用户真正需要的对象不是 VPS，而是一个随时可进入、可恢复、带 Agent、能继续工作的远端开发空间。
+
+传统云厂商暴露给用户的是：
+
+~~~text
+2 vCPU
+4 GB RAM
+80 GB Disk
+1 Public IP
+~~~
+
+但 AI 开发用户真正关心的是：
+
+~~~text
+我的项目还在吗？
+Agent 能继续工作吗？
+环境是否已经准备好？
+能否马上进入？
+改动能否安全回到本地？
+不用时是否停止计算费用？
+~~~
+
+因此未来 git-shadow Managed 产品应该坚持：
+
+~~~text
+User-facing Object = Workspace / Computer
+Infrastructure Object = Target / VM / Container / Bare Metal
+~~~
+
+VPS、云厂商、虚拟化方式和机器 SKU 应尽量成为可替换实现细节。
+
+### 22.1 Workspace 才是商业对象
+
+建议商业对象关系为：
+
+~~~text
+Account
+  └─ Workspace
+       ├─ Project Identity
+       ├─ Git / Snapshot State
+       ├─ Shadow State
+       ├─ Agent Runtime
+       ├─ Compute Target
+       ├─ Access Path
+       ├─ Lease
+       └─ Cost Policy
+~~~
+
+用户购买的不是“4C8G VPS”，而是“一个可以随时继续工作的远端 AI 开发空间”。
+
+因此 UI、CLI、恢复、暂停、账单、升级和销毁都应该以 Workspace 为中心。
+
+### 22.2 SSH 可以成为产品入口，而不仅是 Transport
+
+Railway 证明 SSH 可以同时承担：
+
+~~~text
+Authentication
++ Transport
++ Product Entry
++ Workspace Resolution
++ Session Negotiation
++ Machine-readable Control Surface
+~~~
+
+因此未来 git-shadow 即使拥有 Desktop、Web 和 IDE，也可以保留类似下面的极轻入口：
+
+~~~text
+ssh shadow.new
+      ↓
+Device Identity
+      ↓
+Workspace Resolver
+      ↓
+Existing Workspace or New Managed Workspace
+      ↓
+Agent / Shell
+~~~
+
+这里的 SSH 不是登录一台固定服务器，而是在请求：为这个设备解析并连接一个远端开发计算环境。
+
+### 22.3 Workspace Resolver 可能成为真正的控制面核心
+
+未来比 VM provisioning 更重要的模块可能是 WorkspaceResolver。
+
+输入：
+
+~~~text
+DeviceIdentity
+CurrentDirectory
+RepositoryIdentity
+Branch
+UserIntent
+AvailableTargets
+ActiveLeases
+~~~
+
+输出：
+
+~~~text
+resume existing workspace
+or create new workspace
+or fork workspace
+or ask user to choose
+~~~
+
+理想体验最终可以压缩成：
+
+~~~text
+git shadow
+   ↓
+identify repo / branch
+   ↓
+resolve workspace
+   ↓
+resolve or allocate target
+   ↓
+prepare
+   ↓
+launch agent
+~~~
+
+因此未来 Control Plane 的核心更接近：
+
+~~~text
+Identity + WorkspaceResolver + Operation + TargetAdapter
+~~~
+
+而不是 VPS 管理后台。
+
+### 22.4 Persistent Experience != Persistent Compute
+
+如果 Workspace 是一等对象，那么用户体验可以长期存在，而 CPU/RAM 不需要一直占用。
+
+~~~text
+ACTIVE
+  │ idle
+  ▼
+SUSPENDED
+  │ reconnect
+  ▼
+ACTIVE
+~~~
+
+暂停时可以保留：
+
+~~~text
+Workspace identity
+Git state
+Shadow state
+Filesystem snapshot
+Cache policy
+Metadata
+~~~
+
+同时释放昂贵的 CPU/RAM。
+
+所以一个关键商业不变量是：
+
+> Persistent Experience 不等于 Persistent Compute。
+
+这可能比单纯寻找更便宜的 VPS 更重要，因为它允许 git-shadow 在保持用户连续体验的同时压低基础设施成本。
+
+### 22.5 商业模式不应退化成 VPS 转售
+
+如果直接采用传统 VPS SKU：
+
+~~~text
+2C4G = X 美元
+4C8G = Y 美元
+~~~
+
+用户会自然拿 git-shadow 与 Hetzner、Vultr、EC2 做裸算力价格比较。
+
+但 git-shadow 的真正价值更接近：
+
+~~~text
+Workspace retention
+Fast resume
+Agent runtime
+Persistent cache
+Git + Shadow continuity
+Managed access
+Concurrency
+Checkpoint / Fork
+~~~
+
+因此未来计量可以围绕：
+
+~~~text
+基础订阅
++ Active Compute Time
++ Retained Storage
++ Concurrency
++ Premium Runtime Capability
+~~~
+
+但对用户展示仍应保持简单：这个 Workspace 是否正在运行、是否已经暂停、会保留多久、本月最多花多少钱。
+
+### 22.6 潜在产品分层
+
+~~~text
+Free / Trial
+  Ephemeral Workspace
+  Small quota
+  Auto destroy
+  Optional claim
+
+Personal
+  Persistent workspace
+  Auto suspend / resume
+  Retained filesystem
+  Git + Shadow continuity
+
+Pro
+  Larger compute
+  More concurrency
+  Long-running agents
+  Checkpoint / fork
+  Multi-agent experiments
+
+Team
+  Shared workspace
+  Organization ownership
+  RBAC
+  Audit
+  Shared templates
+  Team billing
+~~~
+
+底层 provider 可以变化，但 Workspace 语义不变。
+
+### 22.7 商业不动点
+
+1. Sell workspace, not servers：用户购买的是远端开发工作区体验，不是裸 VPS。
+2. Compute is replaceable：只要 Workspace Identity、Git/Shadow 状态和恢复语义保持，底层 Target 应允许替换或迁移。
+3. Resume matters more than provision：首次创建速度重要，但长期价值更来自“明天回来还能立刻继续”。
+4. Persistent experience, elastic compute：体验持久，计算可以暂停、迁移、缩容或重新分配。
+5. SSH remains first-class：即使未来有 Desktop/Web，SSH 仍可作为开发者和 Agent 的极轻原生入口。
+
+### 22.8 商业 Fixed Point
+
+如果商业方向正确，无论底层 provider 如何变化，用户看到的核心状态机都应该保持：
+
+~~~text
+Project
+   ↓
+Workspace
+   ↓
+Agent
+   ↓
+Work
+   ↓
+Suspend / Resume
+   ↓
+Retain / Claim / Destroy
+~~~
+
+而不应该退化成：
+
+~~~text
+Choose VPS
+→ Choose image
+→ Choose region
+→ Configure firewall
+→ Configure disk
+→ Install tools
+~~~
+
+后者是云厂商的产品语言，不应成为 git-shadow 的产品语言。
+
+> 长期商业方向可以概括为：git-shadow 不应成为 AI 开发者的 VPS 经销商，而应成为 AI 开发者的远端 Workspace 操作系统。
