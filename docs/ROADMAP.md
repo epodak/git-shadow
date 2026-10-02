@@ -163,12 +163,17 @@ Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Wind
 - [ ] 覆盖中断、重试、冲突、取消和销毁测试
 - [ ] 支持随时初始化 Git 或导出到 GitHub
 
-### 8.3 Agent 适配器注册表
+### 8.3 Agent / Control Plane 适配器注册表
 
-- [ ] 抽象 `AgentAdapterRegistry`：detect/prepare/launch/health/auth boundary
-- [ ] 将 CloudCLI、Codex、Claude Code、Command Code、OpenCode 纳入统一适配描述
+Zeron reference 暴露了当前 `AgentAdapterRegistry` 的层级混合：CloudCLI / Zeron 更接近 Agent Control Plane，而 Codex / Claude Code / OpenCode 属于 Agent Runtime。后续不再把两类对象当作同一种 adapter。
+
+- [ ] 抽象 `AgentControlPlaneAdapter`：detect/prepare/launch/create-session/attach/send/interrupt/observe/open-viewport/health/auth boundary
+- [ ] 将 CloudCLI 纳入 Web Control Plane；将 Zeron 作为 Native/Mobile Remote Control Plane candidate 评估
+- [ ] 抽象 `AgentRuntimeAdapter`：detect/prepare/launch/resume/send/interrupt/health/auth boundary
+- [ ] 将 Codex、Claude Code、Command Code、OpenCode 纳入 Agent Runtime 统一适配描述
 - [ ] 验证 `agy`/`antigravity` 的启动形态、认证边界和原生安装准备
-- [ ] 建立 Agent 版本兼容矩阵和失败诊断
+- [ ] 建立共享 capability vocabulary，使 Control Plane 与 Agent Runtime 可以声明式组合
+- [ ] 建立 Agent / Control Plane 版本兼容矩阵和失败诊断
 
 ### 8.4 Managed VPS MVP
 
@@ -182,6 +187,18 @@ Linux VPS。这里的“跨平台”指本地控制端跨平台，不代表 Wind
 - [ ] VS Code 等 IDE 扩展作为可选控制面，而非产品准入条件
 - [ ] Web 控制台用于项目列表、用量、账单和远端工作区管理
 - [ ] 多地域/多云、团队权限、共享工作区和 Agent 适配器扩展机制
+
+### 8.6 Persistent Remote Computer / Engine-Viewport 分离
+
+参考 [Zeron Lessons: Agent Control Plane & Persistent Remote Computer](ZERON_LESSONS_AND_AGENT_CONTROL_PLANE.md)。
+
+- [ ] 把 CLI / Web / Native / Mobile / IDE 明确定义为可替换 `ViewportKind`，不得让某一种 UI 反向拥有核心工作流
+- [ ] 将现有 edge-agent / service-agent 收敛为稳定 Remote Core 协议边界，支持 durable command / event / recovery
+- [ ] 定义 `AgentComputer` 生命周期：allocate / active / idle / suspend / resume / migrate / destroy
+- [ ] 保持 Workspace Identity 与底层 VPS/VM 解耦，使 Persistent Experience 不依赖 Persistent Compute
+- [ ] 允许 always-on VPS 承载长任务和多 Agent，会话生命周期不依赖本地 IDE/浏览器是否在线
+- [ ] 基准测试 Python 常驻组件的启动、空闲内存、CPU、watcher、事件吞吐、重连成本；仅在测量证明有价值时评估 Rust Remote Core
+- [ ] 若引入 Rust，实现必须与现有 TypedExecutionPlan / event schema / ownership law / recovery semantics 协议兼容，禁止 Big Bang rewrite
 
 ## 当前优先顺序
 
