@@ -536,6 +536,7 @@ git shadow service <host> unload
 - [Branch-Scoped Workspace Routing Law](docs/decisions/2026-09-27_BRANCH_SCOPED_WORKSPACE_ROUTING_LAW.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Zeron Lessons: Agent Control Plane & Persistent Remote Computer](docs/ZERON_LESSONS_AND_AGENT_CONTROL_PLANE.md)
+- [Clipboard / Artifact Handoff: wx-ime-sdk & UniClipboard](docs/HANDOFF_AND_CLIPBOARD_REFERENCES.md)
 - [Layered Sync Ownership Law](docs/decisions/2026-09-15_LAYERED_SYNC_OWNERSHIP_LAW.md)
 - [Remote Edge Executor JSONL Law](docs/decisions/2026-09-15_REMOTE_EDGE_EXECUTOR_JSONL_LAW.md)
 - [Local Silence and Zero Git Touch Law](docs/decisions/2026-09-25_LOCAL_SILENCE_AND_ZERO_GIT_TOUCH_LAW.md)

@@ -200,6 +200,17 @@ Zeron reference 暴露了当前 `AgentAdapterRegistry` 的层级混合：CloudCL
 - [ ] 基准测试 Python 常驻组件的启动、空闲内存、CPU、watcher、事件吞吐、重连成本；仅在测量证明有价值时评估 Rust Remote Core
 - [ ] 若引入 Rust，实现必须与现有 TypedExecutionPlan / event schema / ownership law / recovery semantics 协议兼容，禁止 Big Bang rewrite
 
+### 8.7 Handoff Plane / Clipboard & Artifact Transfer
+
+参考 [Clipboard / Artifact Handoff: wx-ime-sdk & UniClipboard](HANDOFF_AND_CLIPBOARD_REFERENCES.md)。该能力与 Shadow Sync 正交，当前只作为 future reference，不进入 P0。
+
+- [ ] 固定 `Synchronization != Handoff`，Handoff 不参与 Git/Shadow/WIP ownership 与 conflict resolution
+- [ ] 定义 `HandoffArtifact` 与 receipt / TTL / cancel / progress 状态机，覆盖 text / image / file
+- [ ] 抽象 `HandoffAdapter`，优先验证 UniClipboard CLI/daemon、WeType/wxc 与 SSH fallback
+- [ ] 保持 Device Trust、Workspace Authorization、Shadow Authorization、Agent Permission 四者分离
+- [ ] 评估 Workspace Inbox + explicit promote：consume / copy-to-workspace / commit-to-Git / promote-to-Shadow / discard
+- [ ] 若 adapter 模式证明为高频核心路径，再评估 Native P2P/E2EE Handoff Engine；UniClipboard Engine 作为主要 Rust 架构参考
+
 ## 当前优先顺序
 
 ```text
